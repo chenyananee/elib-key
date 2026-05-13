@@ -148,6 +148,42 @@ static void test_uninitialized_rejects_scan(void) {
     printf("PASSED\n");
 }
 
+static const elib_key_driver_cfg_t *key_cfg;
+
+/* --- IDLE state tests --- */
+
+static void test_idle_no_event_when_released(void) {
+    printf("Test: idle state, key stays released, no event... ");
+    reset_test_single();
+    key_cfg = test_ctx.driver_cfg;
+    reset_event_log();
+
+    /* Key already released (level=0), scan multiple times */
+    elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 10);
+    assert(event_count == 0);
+
+    printf("PASSED\n");
+}
+
+static void test_idle_detects_rising_edge(void) {
+    printf("Test: idle state detects rising edge, transitions to PRESSED... ");
+    reset_test_single();
+    key_cfg = test_ctx.driver_cfg;
+    reset_event_log();
+
+    /* Press key */
+    mock_levels[0] = 1;
+    elib_key_scan(&test_ctx, 10);
+
+    /* Should be in PRESSED state, no event yet */
+    assert(test_ctx.key_states[0].state == ELIB_KEY_STATE_PRESSED);
+    assert(event_count == 0);
+
+    printf("PASSED\n");
+}
+
 int main(void) {
     printf("=== elib-key tests ===\n\n");
 
@@ -159,6 +195,8 @@ int main(void) {
     test_deinit_valid();
     test_deinit_null();
     test_uninitialized_rejects_scan();
+    test_idle_no_event_when_released();
+    test_idle_detects_rising_edge();
 
     printf("\n=== All tests passed ===\n");
     return 0;
