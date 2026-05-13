@@ -114,13 +114,43 @@ elib_key_err_t elib_key_scan(elib_key_ctx_t *ctx, uint32_t elapsed_ms) {
                     /* Multi-click key: enter MULTI_CLICK_WAIT */
                     ks->click_count++;
                     ks->idle_ms = 0;
-                    ks->state = ELIB_KEY_STATE_MULTI_CLICK_WAIT;
+                    if (ks->click_count >= cfg->max_click) {
+                        /* Reached max clicks: emit immediately */
+                        elib_key_pending_event_t *pe = &ctx->pending[ctx->pending_count];
+                        pe->key_id = cfg->key_id;
+                        pe->valid = 1;
+                        pe->event = ELIB_KEY_EVENT_SHORT_CLICK;
+                        pe->click_count = ks->click_count;
+                        pe->threshold_idx = 0;
+                        ctx->pending_count++;
+                        ks->click_count = 0;
+                        ks->state = ELIB_KEY_STATE_IDLE;
+                    } else {
+                        ks->state = ELIB_KEY_STATE_MULTI_CLICK_WAIT;
+                    }
                 }
             }
             break;
 
         case ELIB_KEY_STATE_MULTI_CLICK_WAIT:
-            /* Will be implemented in next task */
+            ks->idle_ms += (uint16_t)elapsed_ms;
+            if (rising) {
+                /* Another press within window */
+                ks->hold_ms = 0;
+                ks->consumed = 0;
+                ks->state = ELIB_KEY_STATE_PRESSED;
+            } else if (ks->idle_ms >= cfg->multi_click_window_ms) {
+                /* Timeout: emit accumulated clicks */
+                elib_key_pending_event_t *pe = &ctx->pending[ctx->pending_count];
+                pe->key_id = cfg->key_id;
+                pe->valid = 1;
+                pe->event = ELIB_KEY_EVENT_SHORT_CLICK;
+                pe->click_count = ks->click_count;
+                pe->threshold_idx = 0;
+                ctx->pending_count++;
+                ks->click_count = 0;
+                ks->state = ELIB_KEY_STATE_IDLE;
+            }
             break;
         }
     }

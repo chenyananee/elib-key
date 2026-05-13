@@ -73,6 +73,32 @@ static void reset_test_single(void) {
     elib_key_init(&test_ctx, &drv);
 }
 
+static const uint16_t thresholds_multi[] = {2000};
+static const elib_key_item_cfg_t multi_key_cfg[] = {
+    { .key_id = 0, .max_click = 3, .multi_click_window_ms = 300,
+      .long_press_thresholds = thresholds_multi, .threshold_count = 1 },
+};
+
+static elib_key_driver_cfg_t make_multi_key_driver(void) {
+    elib_key_driver_cfg_t cfg = {
+        .keys = multi_key_cfg,
+        .key_count = 1,
+        .read_level = mock_read_level,
+        .on_event = mock_on_event,
+    };
+    return cfg;
+}
+
+static void reset_test_multi(void) {
+    memset(&test_ctx, 0, sizeof(test_ctx));
+    memset(mock_levels, 0, sizeof(mock_levels));
+    reset_event_log();
+    reset_combo_log();
+    elib_key_driver_cfg_t drv = make_multi_key_driver();
+    elib_key_init(&test_ctx, &drv);
+    key_cfg = test_ctx.driver_cfg;
+}
+
 /* --- Init tests --- */
 
 static void test_init_valid(void) {
@@ -251,6 +277,98 @@ static void test_single_click_exceed_max_threshold(void) {
     printf("PASSED\n");
 }
 
+/* --- Multi-click tests --- */
+
+static void test_double_click_within_window(void) {
+    printf("Test: double click within window -> SHORT_CLICK(2)... ");
+    reset_test_multi();
+    reset_event_log();
+
+    /* First click */
+    mock_levels[0] = 1;
+    elib_key_scan(&test_ctx, 10);
+    mock_levels[0] = 0;
+    elib_key_scan(&test_ctx, 10);
+    assert(event_count == 0); /* waiting for more clicks */
+
+    /* Second click within window */
+    elib_key_scan(&test_ctx, 100); /* idle 100ms */
+    mock_levels[0] = 1;
+    elib_key_scan(&test_ctx, 10);
+    mock_levels[0] = 0;
+    elib_key_scan(&test_ctx, 10);
+
+    assert(event_count == 1);
+    assert(last_event_type == ELIB_KEY_EVENT_SHORT_CLICK);
+    assert(last_event_clicks == 2);
+
+    printf("PASSED\n");
+}
+
+static void test_triple_click_immediate_emit(void) {
+    printf("Test: triple click with max_click=3 -> immediate emit... ");
+    reset_test_multi();
+    reset_event_log();
+
+    /* First click */
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+
+    /* Second click */
+    elib_key_scan(&test_ctx, 100);
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+
+    /* Third click (reaches max_click=3) */
+    elib_key_scan(&test_ctx, 100);
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+
+    assert(event_count == 1);
+    assert(last_event_clicks == 3);
+
+    printf("PASSED\n");
+}
+
+static void test_single_click_timeout(void) {
+    printf("Test: single click then timeout -> SHORT_CLICK(1)... ");
+    reset_test_multi();
+    reset_event_log();
+
+    /* Single click */
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+    assert(event_count == 0);
+
+    /* Wait for window timeout (300ms) */
+    elib_key_scan(&test_ctx, 300);
+
+    assert(event_count == 1);
+    assert(last_event_clicks == 1);
+
+    printf("PASSED\n");
+}
+
+static void test_multi_click_second_press_exceeds_threshold(void) {
+    printf("Test: multi-click, second press exceeds max threshold -> no event... ");
+    reset_test_multi();
+    reset_event_log();
+
+    /* First click */
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+
+    /* Second click, hold past max threshold (2000ms) */
+    elib_key_scan(&test_ctx, 100);
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 2000);
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+
+    assert(event_count == 0);
+
+    printf("PASSED\n");
+}
+
 int main(void) {
     printf("=== elib-key tests ===\n\n");
 
@@ -267,6 +385,10 @@ int main(void) {
     test_single_click_short_press();
     test_single_click_long_press();
     test_single_click_exceed_max_threshold();
+    test_double_click_within_window();
+    test_triple_click_immediate_emit();
+    test_single_click_timeout();
+    test_multi_click_second_press_exceeds_threshold();
 
     printf("\n=== All tests passed ===\n");
     return 0;
