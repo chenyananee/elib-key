@@ -2,6 +2,8 @@
 #include "elib_key_core.h"
 #include <string.h>
 
+extern void elib_linkage_process(elib_key_ctx_t *ctx, uint32_t elapsed_ms);
+
 /* Initialize key detection driver layer */
 elib_key_err_t elib_key_init(elib_key_ctx_t *ctx, const elib_key_driver_cfg_t *cfg) {
     if (ctx == NULL || cfg == NULL) {
@@ -153,6 +155,11 @@ elib_key_err_t elib_key_scan(elib_key_ctx_t *ctx, uint32_t elapsed_ms) {
             }
             break;
         }
+    }
+
+    /* Process linkage layer if initialized */
+    if (ctx->linkage_initialized) {
+        elib_linkage_process(ctx, elapsed_ms);
     }
 
     /* Emit unconsumed pending events */

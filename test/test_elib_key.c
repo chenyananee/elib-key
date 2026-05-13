@@ -114,6 +114,36 @@ static elib_key_linkage_cfg_t make_linkage_cfg(void) {
     return cfg;
 }
 
+static const uint16_t thresholds_two[] = {2000};
+static const elib_key_item_cfg_t two_key_cfg[] = {
+    { .key_id = 0, .max_click = 1, .multi_click_window_ms = 0,
+      .long_press_thresholds = thresholds_two, .threshold_count = 1 },
+    { .key_id = 1, .max_click = 1, .multi_click_window_ms = 0,
+      .long_press_thresholds = thresholds_two, .threshold_count = 1 },
+};
+
+static elib_key_driver_cfg_t make_two_key_driver(void) {
+    elib_key_driver_cfg_t cfg = {
+        .keys = two_key_cfg,
+        .key_count = 2,
+        .read_level = mock_read_level,
+        .on_event = mock_on_event,
+    };
+    return cfg;
+}
+
+static void reset_test_two_combo(void) {
+    memset(&test_ctx, 0, sizeof(test_ctx));
+    memset(mock_levels, 0, sizeof(mock_levels));
+    reset_event_log();
+    reset_combo_log();
+    elib_key_driver_cfg_t drv = make_two_key_driver();
+    elib_key_init(&test_ctx, &drv);
+    elib_key_linkage_cfg_t lnk = make_linkage_cfg();
+    elib_key_linkage_init(&test_ctx, &lnk);
+    key_cfg = test_ctx.driver_cfg;
+}
+
 /* --- Init tests --- */
 
 static void test_init_valid(void) {
@@ -450,6 +480,47 @@ static void test_linkage_deinit_null(void) {
     printf("PASSED\n");
 }
 
+/* --- SHORT_COMBO tests --- */
+
+static void test_short_combo_triggered(void) {
+    printf("Test: SHORT_COMBO A+B triggered... ");
+    reset_test_two_combo();
+    reset_event_log();
+    reset_combo_log();
+
+    /* Press A and release */
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+
+    /* Press B and release (within window) */
+    mock_levels[1] = 1; elib_key_scan(&test_ctx, 10);
+    mock_levels[1] = 0; elib_key_scan(&test_ctx, 10);
+
+    assert(combo_count == 1);
+    assert(last_combo_id == 0);
+    assert(last_combo_mode == ELIB_KEY_COMBO_SHORT);
+    /* Driver events should be consumed */
+    assert(event_count == 0);
+
+    printf("PASSED\n");
+}
+
+static void test_short_combo_no_match_single_key(void) {
+    printf("Test: SHORT_COMBO, only one key pressed -> no combo... ");
+    reset_test_two_combo();
+    reset_event_log();
+    reset_combo_log();
+
+    /* Only press A */
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+
+    assert(combo_count == 0);
+    assert(event_count == 1); /* A fires as independent event */
+
+    printf("PASSED\n");
+}
+
 int main(void) {
     printf("=== elib-key tests ===\n\n");
 
@@ -476,6 +547,8 @@ int main(void) {
     test_linkage_init_not_initialized();
     test_linkage_deinit_valid();
     test_linkage_deinit_null();
+    test_short_combo_triggered();
+    test_short_combo_no_match_single_key();
 
     printf("\n=== All tests passed ===\n");
     return 0;
