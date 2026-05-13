@@ -99,6 +99,21 @@ static void reset_test_multi(void) {
     key_cfg = test_ctx.driver_cfg;
 }
 
+static const uint8_t combo_keys_ab[] = {0, 1};
+static const elib_key_combo_cfg_t linkage_combos[] = {
+    { .mode = ELIB_KEY_COMBO_SHORT, .combo_keys = combo_keys_ab,
+      .combo_count = 2, .window_ms = 500, .combo_id = 0 },
+};
+
+static elib_key_linkage_cfg_t make_linkage_cfg(void) {
+    elib_key_linkage_cfg_t cfg = {
+        .combos = linkage_combos,
+        .combo_count = 1,
+        .on_combo = mock_on_combo,
+    };
+    return cfg;
+}
+
 /* --- Init tests --- */
 
 static void test_init_valid(void) {
@@ -391,6 +406,50 @@ static void test_consumed_event_not_emitted(void) {
     printf("PASSED\n");
 }
 
+/* --- Linkage init/deinit tests --- */
+
+static void test_linkage_init_valid(void) {
+    printf("Test: linkage init with valid parameters... ");
+    reset_test_single();
+    elib_key_linkage_cfg_t lnk = make_linkage_cfg();
+    elib_key_err_t err = elib_key_linkage_init(&test_ctx, &lnk);
+    assert(err == ELIB_KEY_OK);
+    assert(test_ctx.linkage_initialized == 1);
+    printf("PASSED\n");
+}
+
+static void test_linkage_init_null_ctx(void) {
+    printf("Test: linkage init with null ctx... ");
+    elib_key_linkage_cfg_t lnk = make_linkage_cfg();
+    assert(elib_key_linkage_init(NULL, &lnk) == ELIB_KEY_ERR_INVALID_PARAM);
+    printf("PASSED\n");
+}
+
+static void test_linkage_init_not_initialized(void) {
+    printf("Test: linkage init before driver init... ");
+    memset(&test_ctx, 0, sizeof(test_ctx));
+    elib_key_linkage_cfg_t lnk = make_linkage_cfg();
+    assert(elib_key_linkage_init(&test_ctx, &lnk) == ELIB_KEY_ERR_NOT_INITIALIZED);
+    printf("PASSED\n");
+}
+
+static void test_linkage_deinit_valid(void) {
+    printf("Test: linkage deinit... ");
+    reset_test_single();
+    elib_key_linkage_cfg_t lnk = make_linkage_cfg();
+    elib_key_linkage_init(&test_ctx, &lnk);
+    elib_key_err_t err = elib_key_linkage_deinit(&test_ctx);
+    assert(err == ELIB_KEY_OK);
+    assert(test_ctx.linkage_initialized == 0);
+    printf("PASSED\n");
+}
+
+static void test_linkage_deinit_null(void) {
+    printf("Test: linkage deinit with null ctx... ");
+    assert(elib_key_linkage_deinit(NULL) == ELIB_KEY_ERR_INVALID_PARAM);
+    printf("PASSED\n");
+}
+
 int main(void) {
     printf("=== elib-key tests ===\n\n");
 
@@ -412,6 +471,11 @@ int main(void) {
     test_single_click_timeout();
     test_multi_click_second_press_exceeds_threshold();
     test_consumed_event_not_emitted();
+    test_linkage_init_valid();
+    test_linkage_init_null_ctx();
+    test_linkage_init_not_initialized();
+    test_linkage_deinit_valid();
+    test_linkage_deinit_null();
 
     printf("\n=== All tests passed ===\n");
     return 0;
