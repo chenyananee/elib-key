@@ -144,6 +144,39 @@ static void reset_test_two_combo(void) {
     key_cfg = test_ctx.driver_cfg;
 }
 
+static const uint8_t combo_hold_a[] = {0};
+static const uint8_t combo_press_b[] = {1};
+static const elib_key_combo_cfg_t linkage_combos_all[] = {
+    { .mode = ELIB_KEY_COMBO_SHORT, .combo_keys = combo_keys_ab,
+      .combo_count = 2, .window_ms = 500, .combo_id = 0 },
+    { .mode = ELIB_KEY_COMBO_LONG, .combo_keys = combo_keys_ab,
+      .combo_count = 2, .window_ms = 500, .combo_id = 1 },
+    { .mode = ELIB_KEY_COMBO_HOLD_PRESS, .hold_keys = combo_hold_a,
+      .hold_count = 1, .press_keys = combo_press_b, .press_count = 1,
+      .combo_id = 2 },
+};
+
+static elib_key_linkage_cfg_t make_linkage_cfg_all(void) {
+    elib_key_linkage_cfg_t cfg = {
+        .combos = linkage_combos_all,
+        .combo_count = 3,
+        .on_combo = mock_on_combo,
+    };
+    return cfg;
+}
+
+static void reset_test_two_combo_all(void) {
+    memset(&test_ctx, 0, sizeof(test_ctx));
+    memset(mock_levels, 0, sizeof(mock_levels));
+    reset_event_log();
+    reset_combo_log();
+    elib_key_driver_cfg_t drv = make_two_key_driver();
+    elib_key_init(&test_ctx, &drv);
+    elib_key_linkage_cfg_t lnk = make_linkage_cfg_all();
+    elib_key_linkage_init(&test_ctx, &lnk);
+    key_cfg = test_ctx.driver_cfg;
+}
+
 /* --- Init tests --- */
 
 static void test_init_valid(void) {
@@ -521,6 +554,82 @@ static void test_short_combo_no_match_single_key(void) {
     printf("PASSED\n");
 }
 
+/* --- LONG_COMBO tests --- */
+
+static void test_long_combo_triggered(void) {
+    printf("Test: LONG_COMBO A+B triggered... ");
+    reset_test_two_combo_all();
+    reset_event_log();
+    reset_combo_log();
+
+    /* Press A, hold past threshold */
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 2000);
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+
+    /* Press B, hold past threshold */
+    mock_levels[1] = 1; elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 2000);
+    mock_levels[1] = 0; elib_key_scan(&test_ctx, 10);
+
+    assert(combo_count == 1);
+    assert(last_combo_id == 1);
+    assert(last_combo_mode == ELIB_KEY_COMBO_LONG);
+    assert(event_count == 0); /* consumed */
+
+    printf("PASSED\n");
+}
+
+/* --- HOLD_PRESS tests --- */
+
+static void test_hold_press_triggered(void) {
+    printf("Test: HOLD_PRESS A held + B pressed... ");
+    reset_test_two_combo_all();
+    reset_event_log();
+    reset_combo_log();
+
+    /* Press A and hold */
+    mock_levels[0] = 1;
+    elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 1000); /* hold past threshold */
+
+    /* Press and release B */
+    mock_levels[1] = 1; elib_key_scan(&test_ctx, 10);
+    mock_levels[1] = 0; elib_key_scan(&test_ctx, 10);
+
+    assert(combo_count == 1);
+    assert(last_combo_id == 2);
+    assert(last_combo_mode == ELIB_KEY_COMBO_HOLD_PRESS);
+    assert(event_count == 0); /* consumed */
+
+    /* Release A */
+    mock_levels[0] = 0;
+    elib_key_scan(&test_ctx, 10);
+
+    printf("PASSED\n");
+}
+
+static void test_hold_press_a_not_held_enough(void) {
+    printf("Test: HOLD_PRESS, A not held long enough -> no combo... ");
+    reset_test_two_combo_all();
+    reset_event_log();
+    reset_combo_log();
+
+    /* Press A briefly */
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    /* Press and release B immediately */
+    mock_levels[1] = 1; elib_key_scan(&test_ctx, 10);
+    mock_levels[1] = 0; elib_key_scan(&test_ctx, 10);
+
+    /* A not held past threshold, no combo */
+    assert(combo_count == 0);
+
+    /* Release A */
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+
+    printf("PASSED\n");
+}
+
 int main(void) {
     printf("=== elib-key tests ===\n\n");
 
@@ -549,6 +658,9 @@ int main(void) {
     test_linkage_deinit_null();
     test_short_combo_triggered();
     test_short_combo_no_match_single_key();
+    test_long_combo_triggered();
+    test_hold_press_triggered();
+    test_hold_press_a_not_held_enough();
 
     printf("\n=== All tests passed ===\n");
     return 0;

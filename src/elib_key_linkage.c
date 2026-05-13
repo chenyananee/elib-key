@@ -120,13 +120,112 @@ void elib_linkage_process(elib_key_ctx_t *ctx, uint32_t elapsed_ms) {
             break;
         }
 
-        case ELIB_KEY_COMBO_LONG:
-            /* Will be implemented in next task */
-            break;
+        case ELIB_KEY_COMBO_LONG: {
+            uint8_t all_satisfied = 1;
+            uint8_t found_any = 0;
 
-        case ELIB_KEY_COMBO_HOLD_PRESS:
-            /* Will be implemented in next task */
+            for (uint8_t k = 0; k < cc->combo_count; k++) {
+                uint8_t kid = cc->combo_keys[k];
+                uint8_t found = 0;
+
+                for (uint8_t p = 0; p < ctx->pending_count; p++) {
+                    if (ctx->pending[p].key_id == kid &&
+                        ctx->pending[p].event == ELIB_KEY_EVENT_LONG_PRESS &&
+                        ctx->pending[p].valid) {
+                        found = 1;
+                        found_any = 1;
+                        break;
+                    }
+                }
+
+                if (!found) {
+                    all_satisfied = 0;
+                }
+            }
+
+            if (all_satisfied && found_any) {
+                for (uint8_t k = 0; k < cc->combo_count; k++) {
+                    int idx = find_key_idx(drv, cc->combo_keys[k]);
+                    if (idx >= 0) {
+                        ctx->key_states[idx].consumed = 1;
+                    }
+                    for (uint8_t p = 0; p < ctx->pending_count; p++) {
+                        if (ctx->pending[p].key_id == cc->combo_keys[k]) {
+                            ctx->pending[p].valid = 0;
+                        }
+                    }
+                }
+                cs->triggered = 1;
+                lnk->on_combo(cc->combo_id, cc->mode);
+            }
             break;
+        }
+
+        case ELIB_KEY_COMBO_HOLD_PRESS: {
+            /* Check: all hold_keys in PRESSED state with hold_ms >= threshold[0] */
+            uint8_t all_held = 1;
+            for (uint8_t k = 0; k < cc->hold_count; k++) {
+                uint8_t kid = cc->hold_keys[k];
+                int idx = find_key_idx(drv, kid);
+                if (idx < 0 || ctx->key_states[idx].state != ELIB_KEY_STATE_PRESSED) {
+                    all_held = 0;
+                    break;
+                }
+                if (drv->keys[idx].threshold_count > 0 &&
+                    ctx->key_states[idx].hold_ms < drv->keys[idx].long_press_thresholds[0]) {
+                    all_held = 0;
+                    break;
+                }
+            }
+
+            if (!all_held) {
+                break;
+            }
+
+            /* Check: all press_keys have SHORT_CLICK in pending */
+            uint8_t all_pressed = 1;
+            uint8_t found_any = 0;
+            for (uint8_t k = 0; k < cc->press_count; k++) {
+                uint8_t kid = cc->press_keys[k];
+                uint8_t found = 0;
+                for (uint8_t p = 0; p < ctx->pending_count; p++) {
+                    if (ctx->pending[p].key_id == kid &&
+                        ctx->pending[p].event == ELIB_KEY_EVENT_SHORT_CLICK &&
+                        ctx->pending[p].valid) {
+                        found = 1;
+                        found_any = 1;
+                        break;
+                    }
+                }
+                if (!found) {
+                    all_pressed = 0;
+                }
+            }
+
+            if (all_pressed && found_any) {
+                /* Consume all participating keys */
+                for (uint8_t k = 0; k < cc->hold_count; k++) {
+                    int idx = find_key_idx(drv, cc->hold_keys[k]);
+                    if (idx >= 0) {
+                        ctx->key_states[idx].consumed = 1;
+                    }
+                }
+                for (uint8_t k = 0; k < cc->press_count; k++) {
+                    int idx = find_key_idx(drv, cc->press_keys[k]);
+                    if (idx >= 0) {
+                        ctx->key_states[idx].consumed = 1;
+                    }
+                    for (uint8_t p = 0; p < ctx->pending_count; p++) {
+                        if (ctx->pending[p].key_id == cc->press_keys[k]) {
+                            ctx->pending[p].valid = 0;
+                        }
+                    }
+                }
+                cs->triggered = 1;
+                lnk->on_combo(cc->combo_id, cc->mode);
+            }
+            break;
+        }
         }
     }
 }
