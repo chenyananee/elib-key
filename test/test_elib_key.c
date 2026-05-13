@@ -630,6 +630,30 @@ static void test_hold_press_a_not_held_enough(void) {
     printf("PASSED\n");
 }
 
+static void test_short_combo_timeout(void) {
+    printf("Test: SHORT_COMBO timeout -> no combo... ");
+    reset_test_two_combo();
+    reset_event_log();
+    reset_combo_log();
+
+    /* Press A */
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+
+    /* Wait past window (500ms) */
+    elib_key_scan(&test_ctx, 500);
+
+    /* Press B */
+    mock_levels[1] = 1; elib_key_scan(&test_ctx, 10);
+    mock_levels[1] = 0; elib_key_scan(&test_ctx, 10);
+
+    assert(combo_count == 0);
+    /* B fires as independent event */
+    assert(event_count >= 1);
+
+    printf("PASSED\n");
+}
+
 int main(void) {
     printf("=== elib-key tests ===\n\n");
 
@@ -661,6 +685,7 @@ int main(void) {
     test_long_combo_triggered();
     test_hold_press_triggered();
     test_hold_press_a_not_held_enough();
+    test_short_combo_timeout();
 
     printf("\n=== All tests passed ===\n");
     return 0;
