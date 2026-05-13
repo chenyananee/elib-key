@@ -369,6 +369,28 @@ static void test_multi_click_second_press_exceeds_threshold(void) {
     printf("PASSED\n");
 }
 
+static void test_consumed_event_not_emitted(void) {
+    printf("Test: consumed event is not emitted... ");
+    reset_test_single();
+    key_cfg = test_ctx.driver_cfg;
+    reset_event_log();
+
+    /* Press key */
+    mock_levels[0] = 1;
+    elib_key_scan(&test_ctx, 10);
+
+    /* Manually mark as consumed (simulating combo trigger) */
+    test_ctx.key_states[0].consumed = 1;
+
+    /* Release */
+    mock_levels[0] = 0;
+    elib_key_scan(&test_ctx, 10);
+
+    assert(event_count == 0);
+
+    printf("PASSED\n");
+}
+
 int main(void) {
     printf("=== elib-key tests ===\n\n");
 
@@ -389,6 +411,7 @@ int main(void) {
     test_triple_click_immediate_emit();
     test_single_click_timeout();
     test_multi_click_second_press_exceeds_threshold();
+    test_consumed_event_not_emitted();
 
     printf("\n=== All tests passed ===\n");
     return 0;

@@ -157,7 +157,11 @@ elib_key_err_t elib_key_scan(elib_key_ctx_t *ctx, uint32_t elapsed_ms) {
 
     /* Emit unconsumed pending events */
     for (uint8_t i = 0; i < ctx->pending_count; i++) {
-        if (ctx->pending[i].valid && !ctx->key_states[find_key_index(drv, ctx->pending[i].key_id)].consumed) {
+        if (!ctx->pending[i].valid) {
+            continue;
+        }
+        int idx = find_key_index(drv, ctx->pending[i].key_id);
+        if (idx >= 0 && !ctx->key_states[idx].consumed) {
             drv->on_event(ctx->pending[i].key_id, ctx->pending[i].event,
                           ctx->pending[i].click_count, ctx->pending[i].threshold_idx);
         }
