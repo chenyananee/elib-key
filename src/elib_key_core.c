@@ -78,7 +78,45 @@ elib_key_err_t elib_key_scan(elib_key_ctx_t *ctx, uint32_t elapsed_ms) {
             break;
 
         case ELIB_KEY_STATE_PRESSED:
-            /* Will be implemented in next task */
+            ks->hold_ms += (uint16_t)elapsed_ms;
+            if (falling) {
+                /* Check if hold exceeds max threshold */
+                uint16_t max_thr = cfg->long_press_thresholds[cfg->threshold_count - 1];
+                if (ks->hold_ms >= max_thr) {
+                    /* Invalid: exceeded max threshold */
+                    ks->state = ELIB_KEY_STATE_IDLE;
+                } else if (cfg->max_click == 1) {
+                    /* Single-click key: emit immediately */
+                    elib_key_pending_event_t *pe = &ctx->pending[ctx->pending_count];
+                    pe->key_id = cfg->key_id;
+                    pe->valid = 1;
+
+                    /* Determine event type */
+                    if (cfg->threshold_count > 0 && ks->hold_ms >= cfg->long_press_thresholds[0]) {
+                        pe->event = ELIB_KEY_EVENT_LONG_PRESS;
+                        pe->click_count = 0;
+                        /* Find which threshold range */
+                        pe->threshold_idx = 0;
+                        for (uint8_t t = 1; t < cfg->threshold_count; t++) {
+                            if (ks->hold_ms < cfg->long_press_thresholds[t]) {
+                                break;
+                            }
+                            pe->threshold_idx = t;
+                        }
+                    } else {
+                        pe->event = ELIB_KEY_EVENT_SHORT_CLICK;
+                        pe->click_count = 1;
+                        pe->threshold_idx = 0;
+                    }
+                    ctx->pending_count++;
+                    ks->state = ELIB_KEY_STATE_IDLE;
+                } else {
+                    /* Multi-click key: enter MULTI_CLICK_WAIT */
+                    ks->click_count++;
+                    ks->idle_ms = 0;
+                    ks->state = ELIB_KEY_STATE_MULTI_CLICK_WAIT;
+                }
+            }
             break;
 
         case ELIB_KEY_STATE_MULTI_CLICK_WAIT:

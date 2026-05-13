@@ -184,6 +184,73 @@ static void test_idle_detects_rising_edge(void) {
     printf("PASSED\n");
 }
 
+/* --- PRESSED state tests --- */
+
+static void test_single_click_short_press(void) {
+    printf("Test: single key, short press -> SHORT_CLICK... ");
+    reset_test_single();
+    key_cfg = test_ctx.driver_cfg;
+    reset_event_log();
+
+    /* Press */
+    mock_levels[0] = 1;
+    elib_key_scan(&test_ctx, 10);
+    /* Hold briefly */
+    mock_levels[0] = 0;
+    elib_key_scan(&test_ctx, 10);
+
+    assert(event_count == 1);
+    assert(last_event_key == 0);
+    assert(last_event_type == ELIB_KEY_EVENT_SHORT_CLICK);
+    assert(last_event_clicks == 1);
+
+    printf("PASSED\n");
+}
+
+static void test_single_click_long_press(void) {
+    printf("Test: single key, long press -> LONG_PRESS... ");
+    reset_test_single();
+    key_cfg = test_ctx.driver_cfg;
+    reset_event_log();
+
+    /* Press and hold past threshold (1000ms) */
+    mock_levels[0] = 1;
+    elib_key_scan(&test_ctx, 10);
+
+    /* Hold for 1010ms total (10 already + 1000 more) */
+    elib_key_scan(&test_ctx, 1000);
+
+    /* Release */
+    mock_levels[0] = 0;
+    elib_key_scan(&test_ctx, 10);
+
+    assert(event_count == 1);
+    assert(last_event_type == ELIB_KEY_EVENT_LONG_PRESS);
+    assert(last_event_threshold == 0);
+
+    printf("PASSED\n");
+}
+
+static void test_single_click_exceed_max_threshold(void) {
+    printf("Test: single key, exceed max threshold -> no event... ");
+    reset_test_single();
+    key_cfg = test_ctx.driver_cfg;
+    reset_event_log();
+
+    /* Press and hold well past threshold */
+    mock_levels[0] = 1;
+    elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 2000);
+
+    /* Release */
+    mock_levels[0] = 0;
+    elib_key_scan(&test_ctx, 10);
+
+    assert(event_count == 0);
+
+    printf("PASSED\n");
+}
+
 int main(void) {
     printf("=== elib-key tests ===\n\n");
 
@@ -197,6 +264,9 @@ int main(void) {
     test_uninitialized_rejects_scan();
     test_idle_no_event_when_released();
     test_idle_detects_rising_edge();
+    test_single_click_short_press();
+    test_single_click_long_press();
+    test_single_click_exceed_max_threshold();
 
     printf("\n=== All tests passed ===\n");
     return 0;
