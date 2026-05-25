@@ -187,7 +187,7 @@ static void test_init_valid(void) {
     elib_key_driver_cfg_t drv = make_single_key_driver();
     elib_key_err_t err = elib_key_init(&test_ctx, &drv);
     assert(err == ELIB_KEY_OK);
-    assert(test_ctx.initialized == 1);
+    assert(test_ctx.bit_flags.initialized == 1);
     assert(test_ctx.driver_cfg == &drv);
 
     printf("PASSED\n");
@@ -234,7 +234,7 @@ static void test_deinit_valid(void) {
     reset_test_single();
     elib_key_err_t err = elib_key_deinit(&test_ctx);
     assert(err == ELIB_KEY_OK);
-    assert(test_ctx.initialized == 0);
+    assert(test_ctx.bit_flags.initialized == 0);
     printf("PASSED\n");
 }
 
@@ -458,7 +458,7 @@ static void test_consumed_event_not_emitted(void) {
     elib_key_scan(&test_ctx, 10);
 
     /* Manually mark as consumed (simulating combo trigger) */
-    test_ctx.key_states[0].consumed = 1;
+    test_ctx.key_states[0].bit_flags.consumed = 1;
 
     /* Release */
     mock_levels[0] = 0;
@@ -477,7 +477,7 @@ static void test_linkage_init_valid(void) {
     elib_key_linkage_cfg_t lnk = make_linkage_cfg();
     elib_key_err_t err = elib_key_linkage_init(&test_ctx, &lnk);
     assert(err == ELIB_KEY_OK);
-    assert(test_ctx.linkage_initialized == 1);
+    assert(test_ctx.bit_flags.linkage_initialized == 1);
     printf("PASSED\n");
 }
 
@@ -503,7 +503,7 @@ static void test_linkage_deinit_valid(void) {
     elib_key_linkage_init(&test_ctx, &lnk);
     elib_key_err_t err = elib_key_linkage_deinit(&test_ctx);
     assert(err == ELIB_KEY_OK);
-    assert(test_ctx.linkage_initialized == 0);
+    assert(test_ctx.bit_flags.linkage_initialized == 0);
     printf("PASSED\n");
 }
 

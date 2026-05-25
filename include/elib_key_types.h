@@ -58,17 +58,21 @@ typedef struct {
     uint8_t  click_count;
     uint16_t hold_ms;
     uint16_t idle_ms;
-    uint8_t  last_level;
-    uint8_t  consumed;
+    struct {
+        uint8_t last_level : 1;
+        uint8_t consumed   : 1;
+    } bit_flags;
 } elib_key_state_t;
 
 /* Pending driver event (before linkage filtering) */
 typedef struct {
     uint8_t  key_id;
-    elib_key_event_t event;
     uint8_t  click_count;
     uint8_t  threshold_idx;
-    uint8_t  valid;
+    struct {
+        uint8_t event : 1;
+        uint8_t valid : 1;
+    } bit_flags;
 } elib_key_pending_event_t;
 
 /* Per-key configuration */
@@ -110,10 +114,37 @@ typedef struct {
 
 /* Per-combo runtime state */
 typedef struct {
-    uint8_t  triggered;
     uint16_t first_event_ms;
-    uint8_t  key_satisfied[ELIB_KEY_MAX_COMBO_KEYS];
+    struct {
+        uint8_t triggered       : 1;
+        uint8_t key_satisfied_0 : 1;
+        uint8_t key_satisfied_1 : 1;
+        uint8_t key_satisfied_2 : 1;
+        uint8_t key_satisfied_3 : 1;
+    } bit_flags;
 } elib_key_combo_state_t;
+
+/* Helper: get key_satisfied bit by index (0-3) */
+static inline uint16_t elib_key_combo_is_satisfied(const elib_key_combo_state_t *cs, uint8_t idx) {
+    switch (idx) {
+        case 0: return cs->bit_flags.key_satisfied_0;
+        case 1: return cs->bit_flags.key_satisfied_1;
+        case 2: return cs->bit_flags.key_satisfied_2;
+        case 3: return cs->bit_flags.key_satisfied_3;
+        default: return 0;
+    }
+}
+
+/* Helper: set key_satisfied bit by index (0-3) */
+static inline void elib_key_combo_set_satisfied(elib_key_combo_state_t *cs, uint8_t idx, uint16_t val) {
+    switch (idx) {
+        case 0: cs->bit_flags.key_satisfied_0 = val; break;
+        case 1: cs->bit_flags.key_satisfied_1 = val; break;
+        case 2: cs->bit_flags.key_satisfied_2 = val; break;
+        case 3: cs->bit_flags.key_satisfied_3 = val; break;
+        default: break;
+    }
+}
 
 /* Main context (user-allocated) */
 typedef struct {
@@ -122,12 +153,15 @@ typedef struct {
     elib_key_pending_event_t pending[ELIB_KEY_MAX_KEYS];
     uint8_t                  pending_count;
     const elib_key_driver_cfg_t *driver_cfg;
-    int                      initialized;
 
     /* Linkage layer */
     elib_key_combo_state_t   combo_states[ELIB_KEY_MAX_COMBOS];
     const elib_key_linkage_cfg_t *linkage_cfg;
-    int                      linkage_initialized;
+
+    struct {
+        uint8_t initialized         : 1;
+        uint8_t linkage_initialized : 1;
+    } bit_flags;
 } elib_key_ctx_t;
 
 #ifdef __cplusplus
