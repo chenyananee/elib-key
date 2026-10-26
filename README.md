@@ -89,6 +89,8 @@ static const elib_key_combo_cfg_t combos[] = {
     /* AB 长按组合，共同按住窗口 {1000, 3000}：末档 3000 为封顶（按住超过
      * 3000 再松手判无效）；无窗口需求用 ELIB_KEY_COMBO_LONG_BINARY */
     ELIB_KEY_COMBO_LONG(1, keys_ab, 1000, 1000, 3000),
+    /* 窗口也可以复用已声明的数组（窗口计数自动推导） */
+    /* ELIB_KEY_COMBO_LONG_SIMPLE(1, keys_ab, 1000, ab_windows), */
     ELIB_KEY_COMBO_HOLD_PRESS(2, keys_a, keys_b),  /* 无 window_ms 参数 */
 };
 
@@ -395,6 +397,9 @@ int main(void) {
 - **长按末档封顶**：持时 >= `thresholds[threshold_count-1]` 判无效。想要逐级升级不被末档截断，用 `on_long_hold`，或配一个大数兜底档
 - **无消抖**：本库不处理机械抖动。抖动（常见 5~20ms）会产生多余的 press/release 甚至假连击，请在硬件层面（RC 滤波）或读取回调层面做消抖
 - **手势互斥是硬约束**：同一时刻只有一种手势（见"手势互斥"节）；依赖并发独立按键的应用不适合本库
+- **全员松开 = 全复位**：无论之前发生过什么（组合声明、声明失败、判无效、键被忽略），只要所有键都松开并经过一次扫描，库状态完全干净（claimed/follower/owner/手势槽全部归零）；某键被机械卡住按住期间其他键持续互斥，该键一松手全系统自愈
+- **声明期内的点击不外漏**：组合参与键在 declared 手势内的快速点击会被整体作废，不会转化成后续连击等待窗里的 `SHORT_CLICK` 事件
+- **窗口末档给 `65535` = 释放分类永不触发**：`on_combo_hold` 到点回调照常工作，但松手永远落在"超末档无效"分支，等效纯到点用法
 - **计时容量**：单键计时用 `uint16_t`，持时/间隔上限约 65.5 秒；单次 `elapsed_ms` 最大 65535，轮询周期请远小于此
 - **配置数组**：所有配置可放 `const`/flash；阈值数组必须升序且 1~`ELIB_KEY_MAX_THRESHOLDS` 个
 - **详细行为规范**：`docs/superpowers/specs/2026-05-12-elib-key-design.md`
