@@ -245,7 +245,7 @@ elib_key_err_t elib_key_scan(elib_key_ctx_t *ctx, uint32_t elapsed_ms) {
 
     /* Single-gesture arbitration: channel roles, combo claiming, follower
      * discard. Runs every scan — exclusivity holds even without combos */
-    elib_key_arbitrate(ctx);
+    elib_key_arbitrate(ctx, elapsed_ms);
 
     /* Emit unconsumed pending events */
     for (uint8_t i = 0; i < ctx->pending_count; i++) {

@@ -11,7 +11,7 @@ static inline uint16_t elib_key_add_ms(uint16_t base, uint32_t delta) {
 }
 
 /* Internal cross-module API */
-void elib_key_arbitrate(elib_key_ctx_t *ctx);
+void elib_key_arbitrate(elib_key_ctx_t *ctx, uint32_t elapsed_ms);
 /* Returns 0 when the key's on_long_hold escalation must stay silent this
  * scan (combo-claimed, follower, or a combo is about to claim it); withheld
  * levels do not advance the notified index, and unclaimed keys flush their

@@ -70,7 +70,36 @@
       .window_ms = (window),                                                 \
       .combo_id = (cid) }
 
-#define ELIB_KEY_COMBO_LONG(cid, keys_list, window)                          \
+/* COMBO_LONG with configurable co-held windows (mirror of per-key long
+ * press thresholds): the gesture claims the instant all participants are
+ * pressed; each window crossed while they stay held fires the optional
+ * on_combo_hold callback, and releasing while the co-held time falls in a
+ * window fires the combo. The LAST window is the cap: releasing past it
+ * classifies invalid (nothing fires).
+ * ELIB_KEY_COMBO_LONG(cid, keys_list, window, ...window_ms) */
+#define ELIB_KEY_COMBO_LONG(cid, keys_list, window, ...)                     \
+    { .mode = ELIB_KEY_COMBO_LONG,                                         \
+      .combo_keys = (keys_list),                                             \
+      .combo_count = ELIB_KEY_ARRAY_SIZE(keys_list),                         \
+      .long_press_thresholds = (const uint16_t[]){__VA_ARGS__},              \
+      .threshold_count =                                                  \
+          sizeof((const uint16_t[]){__VA_ARGS__}) / sizeof(uint16_t),        \
+      .window_ms = (window),                                                 \
+      .combo_id = (cid) }
+
+/* COMBO_LONG reusing an existing, separately declared window array */
+#define ELIB_KEY_COMBO_LONG_SIMPLE(cid, keys_list, window, win_arr)          \
+    { .mode = ELIB_KEY_COMBO_LONG,                                         \
+      .combo_keys = (keys_list),                                             \
+      .combo_count = ELIB_KEY_ARRAY_SIZE(keys_list),                         \
+      .long_press_thresholds = (win_arr),                                    \
+      .threshold_count = ELIB_KEY_ARRAY_SIZE(win_arr),                       \
+      .window_ms = (window),                                                 \
+      .combo_id = (cid) }
+
+/* Legacy binary COMBO_LONG: no windows (claim when all participants passed
+ * their own first threshold; fire once when all released) */
+#define ELIB_KEY_COMBO_LONG_BINARY(cid, keys_list, window)                   \
     { .mode = ELIB_KEY_COMBO_LONG,                                         \
       .combo_keys = (keys_list),                                             \
       .combo_count = ELIB_KEY_ARRAY_SIZE(keys_list),                         \

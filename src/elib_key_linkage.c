@@ -19,7 +19,13 @@
  *                  first threshold; fires once when all released. The
  *                  claim permanently cancels every participant's LONG_PRESS
  *                  classification and on_long_hold escalation for the
- *                  gesture.
+ *                  gesture. With windows configured (threshold_count > 0)
+ *                  it instead claims the instant every participant is
+ *                  pressed — that moment is the co-held timing origin; each
+ *                  window crossed while they stay held fires the
+ *                  on_combo_hold escalation, and releasing inside a window
+ *                  fires the combo while releasing past the last window
+ *                  classifies the whole gesture invalid.
  *   COMBO_HOLD_PRESS fires when hold keys are pressed past their first
  *                  threshold AND press keys' clicks are captured; hold keys
  *                  stay claimed (silent) until everything is released.
@@ -94,6 +100,18 @@ static uint8_t all_hold_past_first(const elib_key_ctx_t *ctx,
                                    const uint8_t *ids, uint8_t count) {
     for (uint8_t k = 0; k < count; k++) {
         if (!hold_past_first(ctx, drv, ids[k])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Every listed key currently pressed */
+static uint8_t all_pressed(const elib_key_ctx_t *ctx,
+                           const elib_key_driver_cfg_t *drv,
+                           const uint8_t *ids, uint8_t count) {
+    for (uint8_t k = 0; k < count; k++) {
+        if (!is_pressed_at(ctx, key_idx_of(drv, ids[k]))) {
             return 0;
         }
     }
@@ -259,6 +277,14 @@ elib_key_err_t elib_key_linkage_init(elib_key_ctx_t *ctx, const elib_key_linkage
                 cc->combo_count > ELIB_KEY_MAX_COMBO_KEYS) {
                 return ELIB_KEY_ERR_INVALID_PARAM;
             }
+            /* COMBO_LONG windows (optional): when present the array pointer
+             * must be set and the count bounded like per-key thresholds */
+            if (cc->mode == ELIB_KEY_COMBO_LONG &&
+                (cc->threshold_count > ELIB_KEY_MAX_THRESHOLDS ||
+                 (cc->threshold_count > 0 &&
+                  cc->long_press_thresholds == NULL))) {
+                return ELIB_KEY_ERR_INVALID_PARAM;
+            }
             for (uint8_t k = 0; k < cc->combo_count; k++) {
                 if (elib_key_find_key_index(ctx->driver_cfg,
                                             cc->combo_keys[k]) < 0) {
@@ -335,14 +361,22 @@ uint8_t elib_key_hold_notify_allowed(const elib_key_ctx_t *ctx, uint8_t key_idx)
     for (uint8_t c = 0; c < lnk->combo_count; c++) {
         const elib_key_combo_cfg_t *cc = &lnk->combos[c];
         if (cc->mode == ELIB_KEY_COMBO_LONG) {
-            /* Claim is imminent: all other participants pressed past their
-             * first threshold */
+            /* Claim imminent check differs by configuration:
+             * windowed LONG claims as soon as every participant is down
+             * (one scan ordering margin); legacy binary claims once every
+             * other participant is past its own first threshold */
             uint8_t others_ok = 1;
             for (uint8_t k = 0; k < cc->combo_count; k++) {
                 if (cc->combo_keys[k] == key_id) {
                     continue;
                 }
-                if (!hold_past_first(ctx, drv, cc->combo_keys[k])) {
+                if (cc->threshold_count > 0) {
+                    if (!is_pressed_at(ctx, key_idx_of(drv,
+                                                       cc->combo_keys[k]))) {
+                        others_ok = 0;
+                        break;
+                    }
+                } else if (!hold_past_first(ctx, drv, cc->combo_keys[k])) {
                     others_ok = 0;
                     break;
                 }
@@ -363,17 +397,60 @@ uint8_t elib_key_hold_notify_allowed(const elib_key_ctx_t *ctx, uint8_t key_idx)
 
 /* ---- arbitration (runs at the end of every scan) ---- */
 
-void elib_key_arbitrate(elib_key_ctx_t *ctx) {
+void elib_key_arbitrate(elib_key_ctx_t *ctx, uint32_t elapsed_ms) {
     const elib_key_driver_cfg_t *drv = ctx->driver_cfg;
     const elib_key_linkage_cfg_t *lnk =
         ctx->bit_flags.linkage_initialized ? ctx->linkage_cfg : NULL;
 
-    /* 1) Resolve a locked gesture: fire LONG when every participant has
-     * released; HOLD_PRESS is already fired at match time */
+    /* 1) Resolve a locked gesture */
     if (ctx->gesture.bit_flags.locked && lnk != NULL) {
         const elib_key_combo_cfg_t *cc =
             &lnk->combos[ctx->gesture.locked_combo];
-        if (combo_all_released(ctx, drv, cc)) {
+        if (cc->mode == ELIB_KEY_COMBO_LONG && cc->threshold_count > 0) {
+            /* Windowed LONG: accumulate the co-held time while the gesture
+             * runs and report every window crossing; the claim stays
+             * permanent (no replay) until every participant released */
+            if (!combo_all_released(ctx, drv, cc)) {
+                uint8_t crossed = 0;
+                ctx->gesture.hold_ms =
+                    elib_key_add_ms(ctx->gesture.hold_ms, elapsed_ms);
+                for (uint8_t t = 0; t < cc->threshold_count; t++) {
+                    if (ctx->gesture.hold_ms <
+                        cc->long_press_thresholds[t]) {
+                        break;
+                    }
+                    crossed = (uint8_t)(t + 1);
+                }
+                if (crossed > ctx->gesture.notified_idx) {
+                    if (lnk->on_combo_hold != NULL) {
+                        for (uint8_t n =
+                                 (uint8_t)(ctx->gesture.notified_idx + 1);
+                             n <= crossed;
+                             n++) {
+                            lnk->on_combo_hold(cc->combo_id,
+                                               (uint8_t)(n - 1));
+                        }
+                    }
+                    ctx->gesture.notified_idx = crossed;
+                }
+            } else {
+                /* All released: classify by the co-held time. Hold < first
+                 * window or >= the cap fires nothing (the claim already
+                 * silenced the participants — nothing leaks) */
+                const uint16_t cap =
+                    cc->long_press_thresholds[cc->threshold_count - 1];
+                if (ctx->gesture.hold_ms >=
+                        cc->long_press_thresholds[0] &&
+                    ctx->gesture.hold_ms < cap) {
+                    lnk->on_combo(cc->combo_id, cc->mode);
+                }
+                for_each_member_claim(ctx, drv, cc, 0);
+                memset(&ctx->gesture, 0, sizeof(ctx->gesture));
+            }
+        } else if (combo_all_released(ctx, drv, cc)) {
+            /* Legacy LONG and HOLD_PRESS: fire once when every participant
+             * released (HOLD_PRESS reports at match time; fired is already
+             * set, so this branch only terminates its claims) */
             if (!ctx->gesture.bit_flags.fired) {
                 lnk->on_combo(cc->combo_id, cc->mode);
             }
@@ -387,8 +464,21 @@ void elib_key_arbitrate(elib_key_ctx_t *ctx) {
         for (uint8_t c = 0; c < lnk->combo_count; c++) {
             const elib_key_combo_cfg_t *cc = &lnk->combos[c];
             if (cc->mode == ELIB_KEY_COMBO_LONG) {
-                if (all_hold_past_first(ctx, drv, cc->combo_keys,
-                                        cc->combo_count)) {
+                if (cc->threshold_count > 0) {
+                    /* Windowed LONG claims the moment every participant is
+                     * pressed; that instant is the co-held timing origin */
+                    if (all_pressed(ctx, drv, cc->combo_keys,
+                                    cc->combo_count)) {
+                        ctx->gesture.locked_combo = c;
+                        ctx->gesture.bit_flags.fired = 0;
+                        ctx->gesture.hold_ms = 0;
+                        ctx->gesture.notified_idx = 0;
+                        ctx->gesture.bit_flags.locked = 1;
+                        for_each_member_claim(ctx, drv, cc, 1);
+                        break;
+                    }
+                } else if (all_hold_past_first(ctx, drv, cc->combo_keys,
+                                               cc->combo_count)) {
                     ctx->gesture.locked_combo = c;
                     ctx->gesture.bit_flags.fired = 0;
                     ctx->gesture.bit_flags.locked = 1;

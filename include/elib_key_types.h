@@ -59,6 +59,9 @@ typedef void (*elib_key_release_cb)(uint8_t key_id);
 /* Fires each time held duration crosses a long-press threshold while the
  * key remains pressed (escalation notifications) */
 typedef void (*elib_key_long_hold_fn)(uint8_t key_id, uint8_t threshold_idx);
+/* Windowed COMBO_LONG escalation: fires each time the co-held time (since
+ * all participants were pressed) crosses a combo window while they stay held */
+typedef void (*elib_key_combo_hold_fn)(uint8_t combo_id, uint8_t threshold_idx);
 
 /* Per-key internal state */
 typedef struct {
@@ -120,7 +123,17 @@ typedef struct {
     uint8_t        press_count;
     const uint8_t *combo_keys;
     uint8_t        combo_count;
-    uint16_t       window_ms;
+    /* COMBO_LONG windows: the gesture claims the instant every participant
+     * is pressed (that moment is the timing origin); each window crossed
+     * while all stay held fires the escalation callback, and the release
+     * classifies by which window the co-held time fell into. The last
+     * window is the cap: releasing past it classifies the gesture invalid
+     * (nothing fires). NULL/0 = legacy binary behavior: claim when every
+     * participant has passed its own first threshold, fire once when all
+     * released, no windows */
+    const uint16_t *long_press_thresholds;
+    uint8_t         threshold_count;
+    uint16_t       window_ms;      /* deprecated: not used by matching */
     uint8_t        combo_id;
 } elib_key_combo_cfg_t;
 
@@ -128,13 +141,19 @@ typedef struct {
 typedef struct {
     const elib_key_combo_cfg_t *combos;
     uint8_t                     combo_count;
-    elib_key_combo_cb           on_combo;
+    elib_key_combo_cb           on_combo;      /* required */
+    elib_key_combo_hold_fn      on_combo_hold; /* optional, may be NULL; used
+                                                * by windowed COMBO_LONG */
 } elib_key_linkage_cfg_t;
 
 /* Single active gesture state: by design at most one gesture exists in the
  * library at any time (single-gesture channel model) */
 typedef struct {
     uint8_t locked_combo;      /* index into linkage combos while locked */
+    uint16_t hold_ms;          /* locked windowed LONG: co-held time since
+                                    all participants were pressed */
+    uint8_t  notified_idx;     /* combo-hold escalation levels already
+                                    reported for this gesture */
     struct {
         uint8_t locked : 1;    /* a combo owns the gesture channel */
         uint8_t fired  : 1;    /* combo already reported; HOLD_PRESS fires at
