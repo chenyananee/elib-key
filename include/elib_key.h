@@ -4,6 +4,7 @@
 
 #include "elib_key_err.h"
 #include "elib_key_types.h"
+#include "elib_key_macros.h"
 
 #ifdef __cplusplus
 extern "C" {
