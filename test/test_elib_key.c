@@ -62,16 +62,28 @@ static void mock_on_long_hold(uint8_t key_id, uint8_t threshold_idx) {
 static uint8_t last_combo_id;
 static elib_key_combo_mode_t last_combo_mode;
 static int combo_count;
+static int combo_hold_count;
+static uint8_t last_combo_hold_id;
+static uint8_t last_combo_hold_level;
 
 static void reset_combo_log(void) {
     combo_count = 0;
     last_combo_id = 0xFF;
+    combo_hold_count = 0;
+    last_combo_hold_id = 0xFF;
+    last_combo_hold_level = 0xFF;
 }
 
 static void mock_on_combo(uint8_t combo_id, elib_key_combo_mode_t mode) {
     last_combo_id = combo_id;
     last_combo_mode = mode;
     combo_count++;
+}
+
+static void mock_on_combo_hold(uint8_t combo_id, uint8_t threshold_idx) {
+    last_combo_hold_id = combo_id;
+    last_combo_hold_level = threshold_idx;
+    combo_hold_count++;
 }
 
 /* Two thresholds so LONG_PRESS has a valid range [1000, 2000);
@@ -245,8 +257,7 @@ static elib_key_driver_cfg_t make_three_key_driver(void) {
 
 static const uint8_t three_ids_ab[] = {0, 1};
 static const elib_key_combo_cfg_t three_combos[] = {
-    { .mode = ELIB_KEY_COMBO_LONG, .combo_keys = three_ids_ab,
-      .combo_count = 2, .window_ms = 500, .combo_id = 10 },
+    ELIB_KEY_COMBO_LONG_BINARY(10, three_ids_ab, 500),
 };
 
 static void reset_three(void) {
@@ -258,6 +269,30 @@ static void reset_three(void) {
     assert(elib_key_init(&test_ctx, &drv) == ELIB_KEY_OK);
     elib_key_linkage_cfg_t lnk = {
         .combos = three_combos, .combo_count = 1, .on_combo = mock_on_combo,
+    };
+    assert(elib_key_linkage_init(&test_ctx, &lnk) == ELIB_KEY_OK);
+    key_cfg = test_ctx.driver_cfg;
+}
+
+/* --- Windowed COMBO_LONG (co-held windows, mirror of per-key long press):
+ * AB combo windows {3000, 5000} — claim the instant both are down, each
+ * window crossed fires on_combo_hold, releasing inside [3000, 5000) fires
+ * the combo, releasing past 5000 classifies invalid */
+static const uint16_t combo_windows[] = {3000, 5000};
+static const elib_key_combo_cfg_t windowed_combos[] = {
+    ELIB_KEY_COMBO_LONG_SIMPLE(10, three_ids_ab, 500, combo_windows),
+};
+
+static void reset_windowed(void) {
+    memset(&test_ctx, 0, sizeof(test_ctx));
+    memset(mock_levels, 0, sizeof(mock_levels));
+    reset_event_log();
+    reset_combo_log();
+    elib_key_driver_cfg_t drv = make_three_key_driver();
+    assert(elib_key_init(&test_ctx, &drv) == ELIB_KEY_OK);
+    elib_key_linkage_cfg_t lnk = {
+        .combos = windowed_combos, .combo_count = 1,
+        .on_combo = mock_on_combo, .on_combo_hold = mock_on_combo_hold,
     };
     assert(elib_key_linkage_init(&test_ctx, &lnk) == ELIB_KEY_OK);
     key_cfg = test_ctx.driver_cfg;
@@ -1142,6 +1177,34 @@ static void test_linkage_rejects_empty_hold_press(void) {
     printf("PASSED\n");
 }
 
+static void test_linkage_rejects_bad_combo_windows(void) {
+    printf("Test: linkage init rejects malformed COMBO_LONG windows... ");
+    reset_init_two_key_driver();
+
+    static const uint8_t ids_ab[] = {0, 1};
+    static const uint16_t five_wins[] = {10, 20, 30, 40, 50}; /* > MAX_THRESHOLDS */
+    elib_key_combo_cfg_t bad = {
+        .mode = ELIB_KEY_COMBO_LONG, .combo_keys = ids_ab,
+        .combo_count = 2, .combo_id = 9,
+        .long_press_thresholds = five_wins, .threshold_count = 5,
+    };
+    elib_key_linkage_cfg_t lnk = {
+        .combos = &bad, .combo_count = 1, .on_combo = mock_on_combo,
+    };
+    assert(elib_key_linkage_init(&test_ctx, &lnk) == ELIB_KEY_ERR_INVALID_PARAM);
+
+    /* non-NULL pointer with zero count is inconsistent: reject */
+    bad.threshold_count = 0;
+    assert(elib_key_linkage_init(&test_ctx, &lnk) == ELIB_KEY_ERR_INVALID_PARAM);
+
+    /* NULL array with windows pointing nowhere is rejected via count > 0 */
+    bad.long_press_thresholds = NULL;
+    bad.threshold_count = 2;
+    assert(elib_key_linkage_init(&test_ctx, &lnk) == ELIB_KEY_ERR_INVALID_PARAM);
+
+    printf("PASSED\n");
+}
+
 /* --- Behavior matrix: single-gesture channel --- */
 
 static void test_claim_cancels_single_longs(void) {
@@ -1254,6 +1317,144 @@ static void test_channel_busy_without_linkage(void) {
     assert(last_event_key == 0);
     assert(last_event_type == ELIB_KEY_EVENT_LONG_PRESS);
     assert(last_event_threshold == 0);
+
+    printf("PASSED\n");
+}
+
+/* --- Windowed COMBO_LONG behavior --- */
+
+static void test_combo_long_windows_escalation_release(void) {
+    printf("Test: windowed AB long escalates per window, fires in-window... ");
+    reset_windowed();
+
+    /* Both pressed the same scan: claim engages at scan end and the co-held
+     * origin is that moment; both participants go silent immediately */
+    mock_levels[0] = 1; mock_levels[1] = 1; elib_key_scan(&test_ctx, 10);
+
+    /* Co-held 1510: below the first window; participants are already
+     * claimed, so their own escalations never fire */
+    elib_key_scan(&test_ctx, 1500);
+    assert(combo_hold_count == 0);
+    assert(long_hold_count == 0);
+    assert(combo_count == 0);
+    assert(event_count == 0);
+
+    /* Co-held 3110: first window crossed -> escalation level 0 */
+    elib_key_scan(&test_ctx, 1600);
+    assert(combo_hold_count == 1);
+    assert(last_combo_hold_id == 10);
+    assert(last_combo_hold_level == 0);
+
+    /* A releases first; the co-held timer keeps running until the last
+     * participant releases (release time measured from the origin) */
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 1200);    /* co-held 4320: inside [3000, 5000) */
+    assert(combo_hold_count == 1);
+    assert(combo_count == 0);
+
+    /* B releases while inside a window: combo fires exactly once */
+    mock_levels[1] = 0; elib_key_scan(&test_ctx, 10);
+    assert(combo_count == 1);
+    assert(last_combo_id == 10);
+    assert(last_combo_mode == ELIB_KEY_COMBO_LONG);
+    assert(event_count == 0);          /* no leaked individual events */
+    assert(long_hold_count == 0);
+    assert(combo_hold_count == 1);
+    assert(press_events[0] == 1 && press_events[1] == 1);
+    assert(release_events[0] == 1 && release_events[1] == 1);
+
+    printf("PASSED\n");
+}
+
+static void test_combo_long_windows_staggered_origin_reset(void) {
+    printf("Test: windowed AB long origin resets when the last key joins... ");
+    reset_windowed();
+
+    /* A pressed alone: its own escalation still works while unclaimed */
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 1300);    /* A hold 1310 >= 1000: level 0 */
+    assert(long_hold_count == 1);
+    assert(last_long_hold_key == 0);
+    assert(combo_hold_count == 0);
+
+    /* B joins: claim at scan end cancels further individual output, and
+     * the co-held origin resets to this moment (A's earlier hold ignored) */
+    mock_levels[1] = 1; elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 1800);    /* co-held 1800 < 3000 */
+    assert(combo_hold_count == 0);
+    assert(long_hold_count == 1);      /* A's level 1 silenced by the claim */
+    assert(combo_count == 0);
+
+    elib_key_scan(&test_ctx, 1300);    /* co-held 3110: window 0 arrives */
+    assert(combo_hold_count == 1);
+    assert(last_combo_hold_level == 0);
+
+    /* A releases first; B keeps holding inside [3000, 5000) */
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 1100);    /* co-held 4220 */
+    mock_levels[1] = 0; elib_key_scan(&test_ctx, 10);
+
+    assert(combo_count == 1);
+    assert(last_combo_id == 10);
+    assert(event_count == 0);
+    assert(long_hold_count == 1);      /* no post-claim replay */
+
+    printf("PASSED\n");
+}
+
+static void test_combo_long_release_past_cap_invalid(void) {
+    printf("Test: releasing past the last window classifies invalid... ");
+    reset_windowed();
+
+    mock_levels[0] = 1; mock_levels[1] = 1; elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 3200);    /* co-held 3200: window 0 */
+    assert(combo_hold_count == 1);
+    elib_key_scan(&test_ctx, 2000);    /* co-held 5200: window 1 = the cap */
+    assert(combo_hold_count == 2);
+    assert(last_combo_hold_level == 1);
+
+    /* Hold past the cap at release: invalid, nothing fires (claims stay
+     * cancelled — a dangerous per-key action can never leak) */
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+    mock_levels[1] = 0; elib_key_scan(&test_ctx, 10);
+    assert(combo_count == 0);
+    assert(event_count == 0);
+    assert(long_hold_count == 0);
+
+    /* The channel is free again: A's own long press works */
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 1100);    /* A hold 1110: level 0 */
+    assert(long_hold_count == 1);
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+    assert(event_count == 1);
+    assert(last_event_key == 0);
+    assert(last_event_type == ELIB_KEY_EVENT_LONG_PRESS);
+    assert(combo_count == 0);          /* no combo without B */
+
+    printf("PASSED\n");
+}
+
+static void test_combo_long_under_first_window_silent(void) {
+    printf("Test: co-held press released before the first window is silent... ");
+    reset_windowed();
+
+    /* Brief accidental co-press: claim silences everything, then release
+     * before the first window fires nothing at all */
+    mock_levels[0] = 1; mock_levels[1] = 1; elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 2500);    /* co-held 2500 < 3000 */
+    assert(long_hold_count == 0);      /* A hold 2510 is in its own valid
+                                        * long range, yet suppressed */
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+    mock_levels[1] = 0; elib_key_scan(&test_ctx, 10);
+    assert(combo_count == 0);
+    assert(event_count == 0);
+    assert(combo_hold_count == 0);
+
+    /* Channel free: a plain A click works again */
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+    assert(event_count == 1);
+    assert(last_event_type == ELIB_KEY_EVENT_SHORT_CLICK);
 
     printf("PASSED\n");
 }
@@ -1480,10 +1681,15 @@ int main(void) {
     test_linkage_rejects_too_many_combo_keys();
     test_linkage_rejects_null_keys();
     test_linkage_rejects_empty_hold_press();
+    test_linkage_rejects_bad_combo_windows();
     test_claim_cancels_single_longs();
     test_owner_survives_bump();
     test_same_scan_rise_without_combo_invalid();
     test_channel_busy_without_linkage();
+    test_combo_long_windows_escalation_release();
+    test_combo_long_windows_staggered_origin_reset();
+    test_combo_long_release_past_cap_invalid();
+    test_combo_long_under_first_window_silent();
     test_press_release_callbacks();
     test_press_release_per_multi_click();
     test_null_callbacks_no_crash();
