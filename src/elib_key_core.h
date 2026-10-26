@@ -11,7 +11,12 @@ static inline uint16_t elib_key_add_ms(uint16_t base, uint32_t delta) {
 }
 
 /* Internal cross-module API */
-void elib_linkage_process(elib_key_ctx_t *ctx, uint32_t elapsed_ms);
+void elib_key_arbitrate(elib_key_ctx_t *ctx);
+/* Returns 0 when the key's on_long_hold escalation must stay silent this
+ * scan (combo-claimed, follower, or a combo is about to claim it); withheld
+ * levels do not advance the notified index, and unclaimed keys flush their
+ * backlog naturally on a later scan */
+uint8_t elib_key_hold_notify_allowed(const elib_key_ctx_t *ctx, uint8_t key_idx);
 int elib_key_find_key_index(const elib_key_driver_cfg_t *cfg, uint8_t key_id);
 
 #endif /* ELIB_KEY_CORE_H */

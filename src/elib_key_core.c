@@ -55,18 +55,43 @@ int elib_key_find_key_index(const elib_key_driver_cfg_t *cfg, uint8_t key_id) {
     return -1;
 }
 
-/* Queue a pending event for the linkage layer; consumed events are filtered
- * at emission time */
-static void elib_key_push_pending(elib_key_ctx_t *ctx, uint8_t key_id,
+/* Queue a pending event for the arbitration layer; events from combo-claimed
+ * keys are dropped outright, follower events are kept so a combo can capture
+ * them (discarded later if unmatched) */
+static void elib_key_push_pending(elib_key_ctx_t *ctx, uint8_t idx,
                                   uint8_t event, uint8_t click_count,
                                   uint8_t threshold_idx) {
+    if (ctx->key_states[idx].bit_flags.claimed) {
+        return; /* combo owner: classification suppressed */
+    }
     elib_key_pending_event_t *pe = &ctx->pending[ctx->pending_count];
-    pe->key_id = key_id;
+    pe->key_id = ctx->driver_cfg->keys[idx].key_id;
     pe->bit_flags.event = event;
     pe->bit_flags.valid = 1;
     pe->click_count = click_count;
     pe->threshold_idx = threshold_idx;
     ctx->pending_count++;
+}
+
+/* Single-gesture channel is busy when a combo is locked, a key owns the
+ * channel in an active state, or an unresolved follower exists */
+static uint8_t elib_key_channel_busy(const elib_key_ctx_t *ctx, uint8_t self_idx) {
+    if (ctx->gesture.bit_flags.locked) {
+        return 1;
+    }
+    for (uint8_t i = 0; i < ctx->driver_cfg->key_count; i++) {
+        if (i == self_idx) {
+            continue;
+        }
+        const elib_key_state_t *ks = &ctx->key_states[i];
+        if (ks->bit_flags.follower ||
+            (ks->bit_flags.owner &&
+             (ks->state == ELIB_KEY_STATE_PRESSED ||
+              ks->state == ELIB_KEY_STATE_MULTI_CLICK_WAIT))) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 /* Scan all keys and process linkage layer */
@@ -90,12 +115,16 @@ elib_key_err_t elib_key_scan(elib_key_ctx_t *ctx, uint32_t elapsed_ms) {
         uint8_t falling = (level == 0 && ks->bit_flags.last_level == 1);
         ks->bit_flags.last_level = level;
 
-        /* Raw edge callbacks (unclassified, fire immediately) */
+        /* Raw edge callbacks (unclassified, fire immediately and are never
+         * suppressed by the arbitration rules) */
         if (rising && drv->on_press != NULL) {
             drv->on_press(cfg->key_id);
         }
-        if (falling && drv->on_release != NULL) {
-            drv->on_release(cfg->key_id);
+        if (falling) {
+            ks->bit_flags.fell = 1;
+            if (drv->on_release != NULL) {
+                drv->on_release(cfg->key_id);
+            }
         }
 
         switch (ks->state) {
@@ -105,6 +134,17 @@ elib_key_err_t elib_key_scan(elib_key_ctx_t *ctx, uint32_t elapsed_ms) {
                 ks->hold_ms = 0;
                 ks->hold_notified_idx = 0;
                 ks->bit_flags.consumed = 0;
+                ks->bit_flags.fresh = 1;
+                if (elib_key_channel_busy(ctx, i)) {
+                    /* Another gesture owns the channel: this key joins as a
+                     * follower; its classification is discarded at release
+                     * unless a combo claims it */
+                    ks->bit_flags.follower = 1;
+                    ks->bit_flags.owner = 0;
+                } else {
+                    ks->bit_flags.owner = 1;
+                    ks->bit_flags.follower = 0;
+                }
                 ks->state = ELIB_KEY_STATE_PRESSED;
             }
             break;
@@ -112,8 +152,11 @@ elib_key_err_t elib_key_scan(elib_key_ctx_t *ctx, uint32_t elapsed_ms) {
         case ELIB_KEY_STATE_PRESSED:
             ks->hold_ms = elib_key_add_ms(ks->hold_ms, elapsed_ms);
 
-            /* Long-hold notifications for thresholds crossed while held */
-            if (drv->on_long_hold != NULL) {
+            /* Long-hold notifications for thresholds crossed while held;
+             * the arbiter may hold them back (combo claimed / follower /
+             * claim imminent) — withheld levels flush later on their own */
+            if (drv->on_long_hold != NULL &&
+                elib_key_hold_notify_allowed(ctx, i)) {
                 uint8_t crossed = 0;
                 for (uint8_t t = 0; t < cfg->threshold_count; t++) {
                     if (ks->hold_ms < cfg->long_press_thresholds[t]) {
@@ -151,14 +194,14 @@ elib_key_err_t elib_key_scan(elib_key_ctx_t *ctx, uint32_t elapsed_ms) {
                         }
                         threshold_idx = t;
                     }
-                    elib_key_push_pending(ctx, cfg->key_id,
+                    elib_key_push_pending(ctx, i,
                                           (uint8_t)ELIB_KEY_EVENT_LONG_PRESS,
                                           0, threshold_idx);
                     ks->click_count = 0;
                     ks->state = ELIB_KEY_STATE_IDLE;
                 } else if (cfg->max_click == 1) {
                     /* Single-click key: emit SHORT_CLICK immediately */
-                    elib_key_push_pending(ctx, cfg->key_id,
+                    elib_key_push_pending(ctx, i,
                                           (uint8_t)ELIB_KEY_EVENT_SHORT_CLICK,
                                           1, 0);
                     ks->state = ELIB_KEY_STATE_IDLE;
@@ -168,7 +211,7 @@ elib_key_err_t elib_key_scan(elib_key_ctx_t *ctx, uint32_t elapsed_ms) {
                     ks->idle_ms = 0;
                     if (ks->click_count >= cfg->max_click) {
                         /* Reached max clicks: emit immediately */
-                        elib_key_push_pending(ctx, cfg->key_id,
+                        elib_key_push_pending(ctx, i,
                                               (uint8_t)ELIB_KEY_EVENT_SHORT_CLICK,
                                               ks->click_count, 0);
                         ks->click_count = 0;
@@ -190,7 +233,7 @@ elib_key_err_t elib_key_scan(elib_key_ctx_t *ctx, uint32_t elapsed_ms) {
                 ks->state = ELIB_KEY_STATE_PRESSED;
             } else if (ks->idle_ms >= cfg->multi_click_window_ms) {
                 /* Timeout: emit accumulated clicks */
-                elib_key_push_pending(ctx, cfg->key_id,
+                elib_key_push_pending(ctx, i,
                                       (uint8_t)ELIB_KEY_EVENT_SHORT_CLICK,
                                       ks->click_count, 0);
                 ks->click_count = 0;
@@ -200,10 +243,9 @@ elib_key_err_t elib_key_scan(elib_key_ctx_t *ctx, uint32_t elapsed_ms) {
         }
     }
 
-    /* Process linkage layer if initialized */
-    if (ctx->bit_flags.linkage_initialized) {
-        elib_linkage_process(ctx, elapsed_ms);
-    }
+    /* Single-gesture arbitration: channel roles, combo claiming, follower
+     * discard. Runs every scan — exclusivity holds even without combos */
+    elib_key_arbitrate(ctx);
 
     /* Emit unconsumed pending events */
     for (uint8_t i = 0; i < ctx->pending_count; i++) {

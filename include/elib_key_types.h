@@ -68,8 +68,15 @@ typedef struct {
     uint16_t hold_ms;
     uint16_t idle_ms;
     struct {
-        uint8_t last_level : 1;
-        uint8_t consumed   : 1;
+        uint16_t last_level : 1;
+        uint16_t consumed   : 1;
+        uint16_t owner      : 1; /* owns the single gesture channel */
+        uint16_t follower   : 1; /* joined while another gesture owned the
+                                      channel; classification discarded at
+                                      release unless a combo claims it */
+        uint16_t claimed    : 1; /* member of a locked combo */
+        uint16_t fresh      : 1; /* rose in the current scan */
+        uint16_t fell       : 1; /* fell in the current scan */
     } bit_flags;
 } elib_key_state_t;
 
@@ -124,39 +131,16 @@ typedef struct {
     elib_key_combo_cb           on_combo;
 } elib_key_linkage_cfg_t;
 
-/* Per-combo runtime state */
+/* Single active gesture state: by design at most one gesture exists in the
+ * library at any time (single-gesture channel model) */
 typedef struct {
-    uint16_t first_event_ms;
+    uint8_t locked_combo;      /* index into linkage combos while locked */
     struct {
-        uint8_t triggered       : 1;
-        uint8_t key_satisfied_0 : 1;
-        uint8_t key_satisfied_1 : 1;
-        uint8_t key_satisfied_2 : 1;
-        uint8_t key_satisfied_3 : 1;
+        uint8_t locked : 1;    /* a combo owns the gesture channel */
+        uint8_t fired  : 1;    /* combo already reported; HOLD_PRESS fires at
+                                    match, LONG fires when all released */
     } bit_flags;
-} elib_key_combo_state_t;
-
-/* Helper: get key_satisfied bit by index (0-3) */
-static inline uint16_t elib_key_combo_is_satisfied(const elib_key_combo_state_t *cs, uint8_t idx) {
-    switch (idx) {
-        case 0: return cs->bit_flags.key_satisfied_0;
-        case 1: return cs->bit_flags.key_satisfied_1;
-        case 2: return cs->bit_flags.key_satisfied_2;
-        case 3: return cs->bit_flags.key_satisfied_3;
-        default: return 0;
-    }
-}
-
-/* Helper: set key_satisfied bit by index (0-3) */
-static inline void elib_key_combo_set_satisfied(elib_key_combo_state_t *cs, uint8_t idx, uint16_t val) {
-    switch (idx) {
-        case 0: cs->bit_flags.key_satisfied_0 = val; break;
-        case 1: cs->bit_flags.key_satisfied_1 = val; break;
-        case 2: cs->bit_flags.key_satisfied_2 = val; break;
-        case 3: cs->bit_flags.key_satisfied_3 = val; break;
-        default: break;
-    }
-}
+} elib_key_gesture_t;
 
 /* Main context (user-allocated) */
 typedef struct {
@@ -167,7 +151,7 @@ typedef struct {
     const elib_key_driver_cfg_t *driver_cfg;
 
     /* Linkage layer */
-    elib_key_combo_state_t   combo_states[ELIB_KEY_MAX_COMBOS];
+    elib_key_gesture_t       gesture;
     const elib_key_linkage_cfg_t *linkage_cfg;
 
     struct {
