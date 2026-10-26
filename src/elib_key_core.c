@@ -175,49 +175,64 @@ elib_key_err_t elib_key_scan(elib_key_ctx_t *ctx, uint32_t elapsed_ms) {
             }
 
             if (falling) {
-                /* Three-tier release judgment (design spec 4.3):
-                 * 1. hold >= max threshold: invalid, discard sequence
-                 * 2. hold in [thr[0], max): LONG_PRESS, terminates sequence
-                 * 3. hold < thr[0]: SHORT_CLICK, per max_click behavior */
-                uint16_t max_thr = cfg->long_press_thresholds[cfg->threshold_count - 1];
-                if (ks->hold_ms >= max_thr) {
-                    /* Invalid: exceeded max threshold, discard sequence */
+                if (ks->bit_flags.claimed) {
+                    /* Claimed member: classification is fully cancelled for
+                     * the gesture (no replay). Discard outright instead of
+                     * entering MULTI_CLICK_WAIT, which would leak the held
+                     * clicks as a SHORT_CLICK after the combo gesture ends */
                     ks->click_count = 0;
                     ks->state = ELIB_KEY_STATE_IDLE;
-                } else if (ks->hold_ms >= cfg->long_press_thresholds[0]) {
-                    /* Long press: emit its threshold level; terminates any
-                     * click sequence and discards accumulated clicks */
-                    uint8_t threshold_idx = 0;
-                    for (uint8_t t = 1; t < cfg->threshold_count; t++) {
-                        if (ks->hold_ms < cfg->long_press_thresholds[t]) {
-                            break;
-                        }
-                        threshold_idx = t;
-                    }
-                    elib_key_push_pending(ctx, i,
-                                          (uint8_t)ELIB_KEY_EVENT_LONG_PRESS,
-                                          0, threshold_idx);
-                    ks->click_count = 0;
-                    ks->state = ELIB_KEY_STATE_IDLE;
-                } else if (cfg->max_click == 1) {
-                    /* Single-click key: emit SHORT_CLICK immediately */
-                    elib_key_push_pending(ctx, i,
-                                          (uint8_t)ELIB_KEY_EVENT_SHORT_CLICK,
-                                          1, 0);
-                    ks->state = ELIB_KEY_STATE_IDLE;
+                    /* hold_notified_idx intentionally kept 0-clean for the
+                     * next press (set on rising anyway) */
+                    ks->hold_ms = 0;
                 } else {
-                    /* Multi-click key: enter MULTI_CLICK_WAIT */
-                    ks->click_count++;
-                    ks->idle_ms = 0;
-                    if (ks->click_count >= cfg->max_click) {
-                        /* Reached max clicks: emit immediately */
-                        elib_key_push_pending(ctx, i,
-                                              (uint8_t)ELIB_KEY_EVENT_SHORT_CLICK,
-                                              ks->click_count, 0);
+                    /* Three-tier release judgment (design spec 4.3):
+                     * 1. hold >= max threshold: invalid, discard sequence
+                     * 2. hold in [thr[0], max): LONG_PRESS, terminates
+                     *    sequence
+                     * 3. hold < thr[0]: SHORT_CLICK, per max_click behavior */
+                    uint16_t max_thr =
+                        cfg->long_press_thresholds[cfg->threshold_count - 1];
+                    if (ks->hold_ms >= max_thr) {
+                        /* Invalid: exceeded max threshold, discard sequence */
                         ks->click_count = 0;
                         ks->state = ELIB_KEY_STATE_IDLE;
+                    } else if (ks->hold_ms >= cfg->long_press_thresholds[0]) {
+                        /* Long press: emit its threshold level; terminates
+                         * any click sequence and discards accumulated clicks
+                         */
+                        uint8_t threshold_idx = 0;
+                        for (uint8_t t = 1; t < cfg->threshold_count; t++) {
+                            if (ks->hold_ms < cfg->long_press_thresholds[t]) {
+                                break;
+                            }
+                            threshold_idx = t;
+                        }
+                        elib_key_push_pending(ctx, i,
+                                              (uint8_t)ELIB_KEY_EVENT_LONG_PRESS,
+                                              0, threshold_idx);
+                        ks->click_count = 0;
+                        ks->state = ELIB_KEY_STATE_IDLE;
+                    } else if (cfg->max_click == 1) {
+                        /* Single-click key: emit SHORT_CLICK immediately */
+                        elib_key_push_pending(ctx, i,
+                                              (uint8_t)ELIB_KEY_EVENT_SHORT_CLICK,
+                                              1, 0);
+                        ks->state = ELIB_KEY_STATE_IDLE;
                     } else {
-                        ks->state = ELIB_KEY_STATE_MULTI_CLICK_WAIT;
+                        /* Multi-click key: enter MULTI_CLICK_WAIT */
+                        ks->click_count++;
+                        ks->idle_ms = 0;
+                        if (ks->click_count >= cfg->max_click) {
+                            /* Reached max clicks: emit immediately */
+                            elib_key_push_pending(ctx, i,
+                                                  (uint8_t)ELIB_KEY_EVENT_SHORT_CLICK,
+                                                  ks->click_count, 0);
+                            ks->click_count = 0;
+                            ks->state = ELIB_KEY_STATE_IDLE;
+                        } else {
+                            ks->state = ELIB_KEY_STATE_MULTI_CLICK_WAIT;
+                        }
                     }
                 }
             }
