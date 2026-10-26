@@ -112,7 +112,10 @@ static void reset_test_single(void) {
     memset(mock_levels, 0, sizeof(mock_levels));
     reset_event_log();
     reset_combo_log();
-    elib_key_driver_cfg_t drv = make_single_key_driver();
+    /* static: elib_key_init stores a pointer into cfg; a helper-local would
+     * dangle once this helper returns and the caller keeps scanning */
+    static elib_key_driver_cfg_t drv;
+    drv = make_single_key_driver();
     elib_key_init(&test_ctx, &drv);
 }
 
@@ -144,7 +147,8 @@ static void reset_test_multi(void) {
     memset(mock_levels, 0, sizeof(mock_levels));
     reset_event_log();
     reset_combo_log();
-    elib_key_driver_cfg_t drv = make_multi_key_driver();
+    static elib_key_driver_cfg_t drv;   /* survives helper return */
+    drv = make_multi_key_driver();
     elib_key_init(&test_ctx, &drv);
     key_cfg = test_ctx.driver_cfg;
 }
@@ -192,9 +196,11 @@ static void reset_test_two_combo(void) {
     memset(mock_levels, 0, sizeof(mock_levels));
     reset_event_log();
     reset_combo_log();
-    elib_key_driver_cfg_t drv = make_two_key_driver();
+    static elib_key_driver_cfg_t drv;   /* survives helper return */
+    drv = make_two_key_driver();
     elib_key_init(&test_ctx, &drv);
-    elib_key_linkage_cfg_t lnk = make_linkage_cfg();
+    static elib_key_linkage_cfg_t lnk;
+    lnk = make_linkage_cfg();
     elib_key_linkage_init(&test_ctx, &lnk);
     key_cfg = test_ctx.driver_cfg;
 }
@@ -225,9 +231,11 @@ static void reset_test_two_combo_all(void) {
     memset(mock_levels, 0, sizeof(mock_levels));
     reset_event_log();
     reset_combo_log();
-    elib_key_driver_cfg_t drv = make_two_key_driver();
+    static elib_key_driver_cfg_t drv;   /* survives helper return */
+    drv = make_two_key_driver();
     elib_key_init(&test_ctx, &drv);
-    elib_key_linkage_cfg_t lnk = make_linkage_cfg_all();
+    static elib_key_linkage_cfg_t lnk;
+    lnk = make_linkage_cfg_all();
     elib_key_linkage_init(&test_ctx, &lnk);
     key_cfg = test_ctx.driver_cfg;
 }
@@ -265,9 +273,11 @@ static void reset_three(void) {
     memset(mock_levels, 0, sizeof(mock_levels));
     reset_event_log();
     reset_combo_log();
-    elib_key_driver_cfg_t drv = make_three_key_driver();
+    static elib_key_driver_cfg_t drv;   /* survives helper return */
+    drv = make_three_key_driver();
     assert(elib_key_init(&test_ctx, &drv) == ELIB_KEY_OK);
-    elib_key_linkage_cfg_t lnk = {
+    static elib_key_linkage_cfg_t lnk;
+    lnk = (elib_key_linkage_cfg_t){
         .combos = three_combos, .combo_count = 1, .on_combo = mock_on_combo,
     };
     assert(elib_key_linkage_init(&test_ctx, &lnk) == ELIB_KEY_OK);
@@ -288,9 +298,11 @@ static void reset_windowed(void) {
     memset(mock_levels, 0, sizeof(mock_levels));
     reset_event_log();
     reset_combo_log();
-    elib_key_driver_cfg_t drv = make_three_key_driver();
+    static elib_key_driver_cfg_t drv;   /* survives helper return */
+    drv = make_three_key_driver();
     assert(elib_key_init(&test_ctx, &drv) == ELIB_KEY_OK);
-    elib_key_linkage_cfg_t lnk = {
+    static elib_key_linkage_cfg_t lnk;
+    lnk = (elib_key_linkage_cfg_t){
         .combos = windowed_combos, .combo_count = 1,
         .on_combo = mock_on_combo, .on_combo_hold = mock_on_combo_hold,
     };
@@ -993,7 +1005,8 @@ static void reset_init_two_key_driver(void) {
     memset(mock_levels, 0, sizeof(mock_levels));
     reset_event_log();
     reset_combo_log();
-    elib_key_driver_cfg_t drv = make_two_key_driver();
+    static elib_key_driver_cfg_t drv;   /* survives helper return */
+    drv = make_two_key_driver();
     assert(elib_key_init(&test_ctx, &drv) == ELIB_KEY_OK);
 }
 
@@ -1459,6 +1472,61 @@ static void test_combo_long_under_first_window_silent(void) {
     printf("PASSED\n");
 }
 
+static void test_all_released_resets_everything(void) {
+    printf("Test: once every key is released, the channel fully resets... ");
+    reset_windowed();
+
+    /* A+B claim the windowed combo and hold past the cap */
+    mock_levels[0] = 1; mock_levels[1] = 1; elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 5200);    /* co-held 5200: windows 0+1 both fired */
+    assert(combo_hold_count == 2);
+
+    /* C bumps mid-gesture and keeps hanging on after the combo ends */
+    mock_levels[2] = 1; elib_key_scan(&test_ctx, 10);
+
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+    mock_levels[1] = 0; elib_key_scan(&test_ctx, 10);
+    /* Invalid end (past the cap): nothing reports, claims are cleared */
+    assert(combo_count == 0);
+    assert(event_count == 0);
+    assert(long_hold_count == 0);
+    assert(test_ctx.key_states[0].bit_flags.claimed == 0);
+    assert(test_ctx.key_states[1].bit_flags.claimed == 0);
+    assert(test_ctx.gesture.bit_flags.locked == 0);
+
+    /* While C still hangs, a fresh press is still an ignored follower */
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+    assert(event_count == 0);
+    assert(test_ctx.key_states[0].bit_flags.follower == 0); /* discarded */
+
+    /* C finally releases: from this scan every key is up */
+    mock_levels[2] = 0; elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 10);      /* one clean idle scan */
+
+    for (uint8_t i = 0; i < 3; i++) {
+        const elib_key_state_t *ks = &test_ctx.key_states[i];
+        assert(ks->state == ELIB_KEY_STATE_IDLE);
+        assert(ks->bit_flags.claimed == 0 && ks->bit_flags.follower == 0);
+        assert(ks->bit_flags.owner == 0);
+        assert(ks->bit_flags.fresh == 0 && ks->bit_flags.fell == 0);
+    }
+    assert(test_ctx.gesture.bit_flags.locked == 0);
+    assert(test_ctx.gesture.hold_ms == 0);
+    assert(test_ctx.gesture.notified_idx == 0);
+    assert(test_ctx.gesture.locked_combo == 0);
+    assert(test_ctx.pending_count == 0);
+
+    /* The freed channel behaves normally again */
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+    assert(event_count == 1);
+    assert(last_event_type == ELIB_KEY_EVENT_SHORT_CLICK);
+    assert(combo_count == 0);
+
+    printf("PASSED\n");
+}
+
 static void test_press_release_callbacks(void) {
     printf("Test: press/release callbacks fire once per edge... ");
     reset_test_single();
@@ -1690,6 +1758,7 @@ int main(void) {
     test_combo_long_windows_staggered_origin_reset();
     test_combo_long_release_past_cap_invalid();
     test_combo_long_under_first_window_silent();
+    test_all_released_resets_everything();
     test_press_release_callbacks();
     test_press_release_per_multi_click();
     test_null_callbacks_no_crash();
