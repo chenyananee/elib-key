@@ -86,7 +86,9 @@ static const uint8_t keys_a[]  = {0};
 static const uint8_t keys_b[]  = {1};
 static const elib_key_combo_cfg_t combos[] = {
     ELIB_KEY_COMBO_SHORT(0, keys_ab, 500),
-    ELIB_KEY_COMBO_LONG(1, keys_ab, 1000),
+    /* AB 长按组合，共同按住窗口 {1000, 3000}：末档 3000 为封顶（按住超过
+     * 3000 再松手判无效）；无窗口需求用 ELIB_KEY_COMBO_LONG_BINARY */
+    ELIB_KEY_COMBO_LONG(1, keys_ab, 1000, 1000, 3000),
     ELIB_KEY_COMBO_HOLD_PRESS(2, keys_a, keys_b),  /* 无 window_ms 参数 */
 };
 
@@ -105,7 +107,10 @@ static const elib_key_linkage_cfg_t link =
 | `ELIB_KEY_KEY_CLICKS_ONLY` | `(id, clicks, window_ms)` | 无长按意图，自动用不可达兜底档 `{65535}` |
 | `ELIB_KEY_KEY_SIMPLE` | `(id, thr_arr)` | 单击键，复用已声明阈值数组 |
 | `ELIB_KEY_KEY_CLICKS` | `(id, clicks, window_ms, thr_arr)` | 多击键，复用已声明阈值数组 |
-| `ELIB_KEY_COMBO_SHORT` / `_LONG` | `(id, keys_arr, window_ms)` | `combo_count` 自动推导 |
+| `ELIB_KEY_COMBO_SHORT` | `(id, keys_arr, window_ms)` | `combo_count` 自动推导 |
+| `ELIB_KEY_COMBO_LONG` | `(id, keys_arr, window_ms, ...共同按住窗口)` | 窗口内联可变参，每个窗口到点触发 `on_combo_hold`；末档为封顶值 |
+| `ELIB_KEY_COMBO_LONG_SIMPLE` | `(id, keys_arr, window_ms, win_arr)` | 复用已声明的窗口数组 |
+| `ELIB_KEY_COMBO_LONG_BINARY` | `(id, keys_arr, window_ms)` | 无窗口的二值长按组合（见下） |
 | `ELIB_KEY_COMBO_HOLD_PRESS` | `(id, hold_arr, press_arr)` | 两个表的计数都自动推导 |
 | `ELIB_KEY_DRIVER_CFG(_FULL)` | ... | 驱动层顶层配置，`key_count` 自动推导 |
 | `ELIB_KEY_LINKAGE_CFG` | `(combos_arr, combo_cb)` | `combo_count` 自动推导 |
@@ -125,7 +130,8 @@ static const elib_key_linkage_cfg_t link =
 | `on_press(key_id)` | 否 | 按下沿，扫描到即触发（原始边沿） |
 | `on_release(key_id)` | 否 | 松开沿（原始边沿，无效释放/被组合消费也触发） |
 | `on_long_hold(key_id, level)` | 否 | 按住期间每跨过一档阈值（长按到点、升级式）；组合声明期内静默 |
-| `on_combo(combo_id, mode)` | 否 | 组合匹配成功（联动层） |
+| `on_combo(combo_id, mode)` | 否 | 组合匹配成功/释放触发（联动层） |
+| `on_combo_hold(combo_id, level)` | 否 | 带窗口长按组合的共同按住时长每跨过一档窗口（到点、升级式）；`ELIB_KEY_LINKAGE_CFG` 生成的结构需手动补 `.on_combo_hold = ...` |
 
 回调都可以是 NULL；回调内部**禁止再调用本库**（不可重入）。
 
@@ -268,10 +274,34 @@ elib_key_linkage_init(&ctx, &link);        /* 在 elib_key_init 之后调用 */
 | 模式 | 触发条件 | 使用要点 |
 |------|----------|----------|
 | `COMBO_SHORT` | 所有参与键的"待分类短按"**同时在场**：全员同扫描松开，或某键已在自己的连击等待窗里 | 想容忍先后按下，给参与键配 `multi_click_window_ms > 0`（建议 100~300） |
-| `COMBO_LONG` | 所有参与键都按住且各自超过首档阈值 → 进入"已声明"状态；**全员松开**时触发 | 声明后参与键的单键长按**整个手势期间被取消**；与单键长按动作互斥 |
+| `COMBO_LONG`（带窗口） | **全员按下的瞬间即声明**（该时刻 = 共同按住计时起点）；共同按住每跨过一档窗口 → `on_combo_hold(combo_id, level)` 到点；**全员松开**时按共同按住时长分类：落在某档窗口内 → 触发组合，**≥ 末档** → 判无效什么都不发 | 与单键长按完全同构（多窗口 + 到点回调 + 释放分类）；**声明从全员按下那一刻就开始**，没到首窗就全员松手也不发任何东西（单键动作已被取消） |
+| `COMBO_LONG`（无窗口） | 所有参与键都按住且各自超过首档阈值 → 进入"已声明"状态；**全员松开**时触发（二值，无档位） | 旧版兼容行为；声明后参与键的单键长按整个手势期间被取消 |
 | `COMBO_HOLD_PRESS` | `hold_keys` 都按住且超过各自首档阈值，且 `press_keys` 的短按被捕获 | 触发后 hold 键保持静默直到全部松开（不会误触发其长按/短按） |
 
 注意：`window_ms` 字段当前**不参与判定**（保留字段以维持配置兼容）；优先级 = 配置数组顺序，先匹配先锁定。
+
+### 带窗口长按组合详解
+
+与单键长按（`on_long_hold` + 释放分类）完全同构，只是计时对象从单键 hold 时间变为**共同按住时长**：
+
+- **起点**：最后一个参与键按下的瞬间（全员按下该刻）。先按的键单独按了多久**不计入**；最后的键按下时，共同计时从 0 开始
+- **到点**：共同按住每跨过一档窗口（`long_press_thresholds` 数组）触发一次 `on_combo_hold(combo_id, level)`（level 从 0 起）；需要 `linkage_cfg` 里补上可选的 `.on_combo_hold`
+- **释放**：全员松开时按"共同按住时长"分类——落在 `[窗口 k, 窗口 k+1)` 内 → `on_combo(combo_id, COMBO_LONG)`；**≥ 末档窗口 → 判无效**（组合与参与键的单键输出全部不发）
+- **参与键取消规则**与二值版一致：声明那一刻起，所有参与键的单键长按分类与 `on_long_hold` 升级静默，且**不回放**（想要单键动作必须全松开后重新按）
+
+示例（A 长按复位机器、AB 长按进工厂模式，窗口 {3000, 5000}）：
+
+```
+A 按下───────► B 按下 ● 起点由此算（共同按住 = 0）
+               │
+               ├ 共同按住 3000 → on_combo_hold(组合, 0)
+               │
+A 先松手 ──────┤ （计时继续，直到最后一人松手）
+               │
+B 松手 ────────┤ 共同按住落在 [3000, 5000) → on_combo 触发工厂模式
+```
+
+A 独自按住的阶段（B 加入前）A 自己的到点回调照常触发；B 加入进入组合后，A 不再有任何单键输出。
 
 ## 手势互斥（单通道语义）
 
