@@ -220,6 +220,49 @@ static void reset_test_two_combo_all(void) {
     key_cfg = test_ctx.driver_cfg;
 }
 
+/* --- Single-gesture channel semantics (behavior matrix) ---
+ * A(id0) long = reset machine, B(id1) long = reset filter,
+ * AB long = factory mode (LONG combo), C(id2) belongs to no combo */
+static const uint16_t thresholds_three[] = {1000, 3000};
+static const elib_key_item_cfg_t three_key_cfg[] = {
+    { .key_id = 0, .max_click = 1, .multi_click_window_ms = 0,
+      .long_press_thresholds = thresholds_three, .threshold_count = 2 },
+    { .key_id = 1, .max_click = 1, .multi_click_window_ms = 0,
+      .long_press_thresholds = thresholds_three, .threshold_count = 2 },
+    { .key_id = 2, .max_click = 1, .multi_click_window_ms = 0,
+      .long_press_thresholds = thresholds_three, .threshold_count = 2 },
+};
+
+static elib_key_driver_cfg_t make_three_key_driver(void) {
+    elib_key_driver_cfg_t cfg = {
+        .keys = three_key_cfg, .key_count = 3,
+        .read_level = mock_read_level, .on_event = mock_on_event,
+        .on_press = mock_on_press, .on_release = mock_on_release,
+        .on_long_hold = mock_on_long_hold,
+    };
+    return cfg;
+}
+
+static const uint8_t three_ids_ab[] = {0, 1};
+static const elib_key_combo_cfg_t three_combos[] = {
+    { .mode = ELIB_KEY_COMBO_LONG, .combo_keys = three_ids_ab,
+      .combo_count = 2, .window_ms = 500, .combo_id = 10 },
+};
+
+static void reset_three(void) {
+    memset(&test_ctx, 0, sizeof(test_ctx));
+    memset(mock_levels, 0, sizeof(mock_levels));
+    reset_event_log();
+    reset_combo_log();
+    elib_key_driver_cfg_t drv = make_three_key_driver();
+    assert(elib_key_init(&test_ctx, &drv) == ELIB_KEY_OK);
+    elib_key_linkage_cfg_t lnk = {
+        .combos = three_combos, .combo_count = 1, .on_combo = mock_on_combo,
+    };
+    assert(elib_key_linkage_init(&test_ctx, &lnk) == ELIB_KEY_OK);
+    key_cfg = test_ctx.driver_cfg;
+}
+
 /* --- Init tests --- */
 
 static void test_init_valid(void) {
@@ -660,26 +703,23 @@ static void test_linkage_deinit_null(void) {
 
 /* --- SHORT_COMBO tests --- */
 
-static void test_short_combo_triggered(void) {
-    printf("Test: SHORT_COMBO A+B triggered... ");
+static void test_sequential_clicks_independent(void) {
+    printf("Test: sequential single clicks never coexist (one at a time)... ");
     reset_test_two_combo();
     reset_event_log();
     reset_combo_log();
 
-    /* Press A and release */
+    /* A clicks and completes at its own release scan; the channel frees */
     mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
     mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
 
-    /* Press B and release (within window) */
+    /* B presses afterwards: starts its own gesture, no combo */
     mock_levels[1] = 1; elib_key_scan(&test_ctx, 10);
     mock_levels[1] = 0; elib_key_scan(&test_ctx, 10);
 
-    assert(combo_count == 1);
-    assert(last_combo_id == 0);
-    assert(last_combo_mode == ELIB_KEY_COMBO_SHORT);
-    /* Key A's event fired independently in its own scan (known cross-scan
-     * race); key B's event was consumed by the combo */
-    assert(event_count == 1);
+    assert(combo_count == 0);
+    /* Both fire as independent events: exactly one gesture at a time */
+    assert(event_count == 2);
 
     printf("PASSED\n");
 }
@@ -703,29 +743,59 @@ static void test_short_combo_no_match_single_key(void) {
 /* --- LONG_COMBO tests --- */
 
 static void test_long_combo_triggered(void) {
-    printf("Test: LONG_COMBO A+B triggered... ");
+    printf("Test: LONG_COMBO claims on hold, fires when all released... ");
     reset_test_two_combo_all();
     reset_event_log();
     reset_combo_log();
 
-    /* Press A, hold into long-press range [200, 500) */
-    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
-    elib_key_scan(&test_ctx, 200);
-    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
-    /* A fires independently in its own scan (known cross-scan race) */
-    assert(event_count == 1);
-    assert(last_event_type == ELIB_KEY_EVENT_LONG_PRESS);
-    assert(last_event_key == 0);
+    /* Press both in the same scan, hold past the first threshold: the
+     * claim engages and cancels every participant's single-key long press */
+    mock_levels[0] = 1; mock_levels[1] = 1; elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 200);  /* hold 210: both past thr[0] */
 
-    /* Press B, hold into long-press range, release within A's window */
+    /* Release staggered: nothing fires until the LAST participant releases */
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+    assert(combo_count == 0);
+    assert(event_count == 0); /* claimed: no independent long press */
+
+    mock_levels[1] = 0; elib_key_scan(&test_ctx, 10);
+    assert(combo_count == 1);
+    assert(last_combo_id == 1);
+    assert(last_combo_mode == ELIB_KEY_COMBO_LONG);
+    assert(event_count == 0);
+    /* Escalation callbacks were held back for the claimed participants */
+    assert(long_hold_count == 0);
+
+    printf("PASSED\n");
+}
+
+static void test_long_combo_claim_after_staggered_press(void) {
+    printf("Test: LONG_COMBO claims once both participants crossed thr... ");
+    reset_test_two_combo_all();
+    reset_event_log();
+    reset_combo_log();
+
+    /* A pressed alone first: its own escalation still works */
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 200);  /* A hold 210: level 0 notified */
+    assert(long_hold_count == 1);
+    assert(last_long_hold_key == 0);
+
+    /* B joins later: becomes a follower; the combo claims once B is also
+     * past its first threshold. From then on everything individual stops */
     mock_levels[1] = 1; elib_key_scan(&test_ctx, 10);
-    elib_key_scan(&test_ctx, 200);
+    elib_key_scan(&test_ctx, 200);  /* B hold 210: claim engages */
+
+    /* B's own escalation is suppressed for the rest of the gesture */
+    elib_key_scan(&test_ctx, 200);  /* both hold ~430, still < 500 */
+    assert(long_hold_count == 1);   /* no further callbacks */
+
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
     mock_levels[1] = 0; elib_key_scan(&test_ctx, 10);
 
     assert(combo_count == 1);
     assert(last_combo_id == 1);
-    assert(last_combo_mode == ELIB_KEY_COMBO_LONG);
-    assert(event_count == 1); /* B's event consumed by the combo */
+    assert(event_count == 0);
 
     printf("PASSED\n");
 }
@@ -953,7 +1023,7 @@ static void test_macros_combo_flow(void) {
 }
 
 static void test_macros_multiclick_race(void) {
-    printf("Test: macro double-click key + combo cross-scan race... ");
+    printf("Test: combo claims multi-click accumulation immediately... ");
     reset_event_log();
     reset_combo_log();
     memset(&test_ctx, 0, sizeof(test_ctx));
@@ -966,22 +1036,30 @@ static void test_macros_multiclick_race(void) {
     mock_levels[0] = 1; mock_levels[1] = 1; elib_key_scan(&test_ctx, 10);
     mock_levels[0] = 0; mock_levels[1] = 0; elib_key_scan(&test_ctx, 10);
 
-    /* Key 1 (single click) pends SHORT_CLICK -> emitted independently this
-     * scan. Key 0 entered its 300ms multi-click wait: no event yet, and the
-     * combo cannot match without it. */
-    assert(combo_count == 0);
-    assert(event_count == 1);
-
-    /* Idle scans: key 0's click window expires at 300ms while the 500ms
-     * combo window is still armed, so its single click feeds the combo */
-    elib_key_scan(&test_ctx, 100); /* idle 100 */
-    elib_key_scan(&test_ctx, 100); /* idle 200 */
-    elib_key_scan(&test_ctx, 100); /* idle 300 -> click emitted, combo fires */
-
+    /* Both clicks are captured in the same scan (key 0 parks in its
+     * multi-click wait, key 1 pends its click): the SHORT combo claims and
+     * consumes both accumulations immediately */
     assert(combo_count == 1);
     assert(last_combo_id == 0);
-    /* Key 0's event was consumed by the combo; key 1's had already fired */
+    assert(event_count == 0);
+
+    /* Idle scans produce nothing afterwards */
+    elib_key_scan(&test_ctx, 100);
+    elib_key_scan(&test_ctx, 100);
+    assert(combo_count == 1);
+    assert(event_count == 0);
+
+    /* The channel is free again: key 0's own double click completes */
+    reset_event_log();
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 100);
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+    assert(combo_count == 1);
     assert(event_count == 1);
+    assert(last_event_type == ELIB_KEY_EVENT_SHORT_CLICK);
+    assert(last_event_clicks == 2);
 
     printf("PASSED\n");
 }
@@ -1060,6 +1138,122 @@ static void test_linkage_rejects_empty_hold_press(void) {
         .combos = &bad, .combo_count = 1, .on_combo = mock_on_combo,
     };
     assert(elib_key_linkage_init(&test_ctx, &lnk) == ELIB_KEY_ERR_INVALID_PARAM);
+
+    printf("PASSED\n");
+}
+
+/* --- Behavior matrix: single-gesture channel --- */
+
+static void test_claim_cancels_single_longs(void) {
+    printf("Test: claimed AB long cancels single A/B long actions... ");
+    reset_three();
+
+    /* Press both together, hold well past the first threshold */
+    mock_levels[0] = 1; mock_levels[1] = 1; elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 1100);    /* hold 1110: claim engages */
+    assert(long_hold_count == 0);      /* escalation fully silenced */
+
+    /* Release A, keep B held long: still nothing individual */
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 1500);    /* B hold ~2620: silent */
+    assert(event_count == 0);
+    assert(long_hold_count == 0);
+
+    /* Release B: the combo fires exactly once */
+    mock_levels[1] = 0; elib_key_scan(&test_ctx, 10);
+    assert(combo_count == 1);
+    assert(last_combo_id == 10);
+    assert(last_combo_mode == ELIB_KEY_COMBO_LONG);
+    assert(event_count == 0);
+
+    /* Raw edges are unaffected by the rules */
+    assert(press_events[0] == 1 && press_events[1] == 1);
+    assert(release_events[0] == 1 && release_events[1] == 1);
+
+    /* Individual A long press works again on the freed channel */
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 1100);    /* A alone: level 0 escalation fires */
+    assert(long_hold_count == 1);
+    assert(last_long_hold_key == 0);
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+    assert(combo_count == 1);          /* no second combo */
+    assert(event_count == 1);
+    assert(last_event_key == 0);
+    assert(last_event_type == ELIB_KEY_EVENT_LONG_PRESS);
+
+    printf("PASSED\n");
+}
+
+static void test_owner_survives_bump(void) {
+    printf("Test: running gesture never disturbed by a non-matching key... ");
+    reset_three();
+
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);   /* A owns the channel */
+    elib_key_scan(&test_ctx, 500);                      /* A hold 510 */
+    mock_levels[1] = 1; elib_key_scan(&test_ctx, 10);   /* B bump: follower */
+    mock_levels[1] = 0; elib_key_scan(&test_ctx, 10);   /* B click discarded */
+    assert(event_count == 0);
+    assert(combo_count == 0);
+
+    elib_key_scan(&test_ctx, 600);                      /* A hold 1130: level 0 */
+    assert(long_hold_count == 1);
+    elib_key_scan(&test_ctx, 1000);                     /* A hold ~2140: level 1 */
+    assert(long_hold_count == 2);
+    assert(last_long_hold_key == 0);
+
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+    /* A's own long press completed: the "reset machine" action fired */
+    assert(combo_count == 0);          /* accidental bump made no combo */
+    assert(event_count == 1);
+    assert(last_event_key == 0);
+    assert(last_event_type == ELIB_KEY_EVENT_LONG_PRESS);
+    assert(last_event_threshold == 1); /* hold in [1000, 3000) */
+    assert(last_event_clicks == 0);
+    assert(press_events[1] == 1);      /* B raw edges unaffected */
+    assert(release_events[1] == 1);
+
+    printf("PASSED\n");
+}
+
+static void test_same_scan_rise_without_combo_invalid(void) {
+    printf("Test: same-scan multi-press without combo -> all invalid... ");
+    reset_three();
+
+    /* A and C rise in the same scan; no combo covers them */
+    mock_levels[0] = 1; mock_levels[2] = 1; elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 1500);    /* both held 1510: fully silent */
+    assert(event_count == 0);
+    assert(long_hold_count == 0);
+    assert(combo_count == 0);
+
+    mock_levels[2] = 0; elib_key_scan(&test_ctx, 10);   /* C: discarded */
+    assert(event_count == 0);
+
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);   /* A: also discarded */
+    assert(event_count == 0);
+    assert(combo_count == 0);
+    assert(release_events[0] == 1 && release_events[2] == 1);
+
+    printf("PASSED\n");
+}
+
+static void test_channel_busy_without_linkage(void) {
+    printf("Test: gesture exclusivity holds without combos configured... ");
+    reset_init_two_key_driver();
+
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);   /* A owns */
+    elib_key_scan(&test_ctx, 200);                      /* A hold 210: level 0 */
+    assert(long_hold_count == 1);
+
+    mock_levels[1] = 1; elib_key_scan(&test_ctx, 10);   /* B bump: follower */
+    mock_levels[1] = 0; elib_key_scan(&test_ctx, 10);   /* B click discarded */
+    assert(event_count == 0);
+
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);   /* A long press valid */
+    assert(event_count == 1);
+    assert(last_event_key == 0);
+    assert(last_event_type == ELIB_KEY_EVENT_LONG_PRESS);
+    assert(last_event_threshold == 0);
 
     printf("PASSED\n");
 }
@@ -1270,9 +1464,10 @@ int main(void) {
     test_linkage_init_not_initialized();
     test_linkage_deinit_valid();
     test_linkage_deinit_null();
-    test_short_combo_triggered();
+    test_sequential_clicks_independent();
     test_short_combo_no_match_single_key();
     test_long_combo_triggered();
+    test_long_combo_claim_after_staggered_press();
     test_hold_press_triggered();
     test_hold_press_a_not_held_enough();
     test_short_combo_timeout();
@@ -1285,6 +1480,10 @@ int main(void) {
     test_linkage_rejects_too_many_combo_keys();
     test_linkage_rejects_null_keys();
     test_linkage_rejects_empty_hold_press();
+    test_claim_cancels_single_longs();
+    test_owner_survives_bump();
+    test_same_scan_rise_without_combo_invalid();
+    test_channel_busy_without_linkage();
     test_press_release_callbacks();
     test_press_release_per_multi_click();
     test_null_callbacks_no_crash();
