@@ -46,16 +46,25 @@ typedef enum {
     ELIB_KEY_COMBO_HOLD_PRESS,
 } elib_key_combo_mode_t;
 
-/* Callbacks */
+/* Callbacks (raw edges and long-hold levels are user-registrable, may be NULL) */
 typedef int  (*elib_key_read_level_fn)(uint8_t key_id);
 typedef void (*elib_key_event_cb)(uint8_t key_id, elib_key_event_t event,
                                   uint8_t click_count, uint8_t threshold_idx);
 typedef void (*elib_key_combo_cb)(uint8_t combo_id, elib_key_combo_mode_t mode);
+/* Raw rising edge (key pressed), fires before classified events */
+typedef void (*elib_key_press_cb)(uint8_t key_id);
+/* Raw falling edge (key released), fires before classified events; not
+ * suppressed by consumption or invalid classification */
+typedef void (*elib_key_release_cb)(uint8_t key_id);
+/* Fires each time held duration crosses a long-press threshold while the
+ * key remains pressed (escalation notifications) */
+typedef void (*elib_key_long_hold_fn)(uint8_t key_id, uint8_t threshold_idx);
 
 /* Per-key internal state */
 typedef struct {
     elib_key_state_e state;
     uint8_t  click_count;
+    uint8_t  hold_notified_idx; /* long-hold levels already notified */
     uint16_t hold_ms;
     uint16_t idle_ms;
     struct {
@@ -89,7 +98,10 @@ typedef struct {
     const elib_key_item_cfg_t *keys;
     uint8_t                    key_count;
     elib_key_read_level_fn     read_level;
-    elib_key_event_cb          on_event;
+    elib_key_event_cb          on_event;       /* required */
+    elib_key_press_cb          on_press;       /* optional, may be NULL */
+    elib_key_release_cb        on_release;     /* optional, may be NULL */
+    elib_key_long_hold_fn      on_long_hold;   /* optional, may be NULL */
 } elib_key_driver_cfg_t;
 
 /* Combo configuration */
