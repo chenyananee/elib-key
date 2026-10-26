@@ -85,9 +85,9 @@ static const uint8_t keys_ab[] = {0, 1};
 static const uint8_t keys_a[]  = {0};
 static const uint8_t keys_b[]  = {1};
 static const elib_key_combo_cfg_t combos[] = {
-    ELIB_KEY_COMBO_SHORT(keys_ab, 500, 0),
-    ELIB_KEY_COMBO_LONG(keys_ab, 1000, 1),
-    ELIB_KEY_COMBO_HOLD_PRESS(keys_a, keys_b, 2),  /* 无 window_ms 参数 */
+    ELIB_KEY_COMBO_SHORT(0, keys_ab, 500),
+    ELIB_KEY_COMBO_LONG(1, keys_ab, 1000),
+    ELIB_KEY_COMBO_HOLD_PRESS(2, keys_a, keys_b),  /* 无 window_ms 参数 */
 };
 
 /* ---- 顶层配置 ---- */
@@ -105,8 +105,8 @@ static const elib_key_linkage_cfg_t link =
 | `ELIB_KEY_KEY_CLICKS_ONLY` | `(id, clicks, window_ms)` | 无长按意图，自动用不可达兜底档 `{65535}` |
 | `ELIB_KEY_KEY_SIMPLE` | `(id, thr_arr)` | 单击键，复用已声明阈值数组 |
 | `ELIB_KEY_KEY_CLICKS` | `(id, clicks, window_ms, thr_arr)` | 多击键，复用已声明阈值数组 |
-| `ELIB_KEY_COMBO_SHORT` / `_LONG` | `(keys_arr, window_ms, id)` | `combo_count` 自动推导 |
-| `ELIB_KEY_COMBO_HOLD_PRESS` | `(hold_arr, press_arr, id)` | 两个表的计数都自动推导 |
+| `ELIB_KEY_COMBO_SHORT` / `_LONG` | `(id, keys_arr, window_ms)` | `combo_count` 自动推导 |
+| `ELIB_KEY_COMBO_HOLD_PRESS` | `(id, hold_arr, press_arr)` | 两个表的计数都自动推导 |
 | `ELIB_KEY_DRIVER_CFG(_FULL)` | ... | 驱动层顶层配置，`key_count` 自动推导 |
 | `ELIB_KEY_LINKAGE_CFG` | `(combos_arr, combo_cb)` | `combo_count` 自动推导 |
 
@@ -324,8 +324,8 @@ static const uint8_t combo_keys_ab[] = {0, 1};
 static const uint8_t combo_keys_a[]  = {0};
 static const uint8_t combo_keys_b[]  = {1};
 static const elib_key_combo_cfg_t combos[] = {
-    ELIB_KEY_COMBO_SHORT(combo_keys_ab, 500, 0),
-    ELIB_KEY_COMBO_HOLD_PRESS(combo_keys_a, combo_keys_b, 1),
+    ELIB_KEY_COMBO_SHORT(0, combo_keys_ab, 500),
+    ELIB_KEY_COMBO_HOLD_PRESS(1, combo_keys_a, combo_keys_b),
 };
 
 static const elib_key_driver_cfg_t drv =

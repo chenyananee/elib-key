@@ -59,17 +59,18 @@
           (const uint16_t[]){ELIB_KEY_CLICK_ONLY_THRESHOLD},                  \
       .threshold_count = 1 }
 
-/* Combo helpers. Macro names equal the mode enum values; the function-like
+/* Combo helpers. The combo id is always the FIRST parameter, matching the
+ * per-key macros. Macro names equal the mode enum values; the function-like
  * macro only expands when called with parentheses, so the bare enum value
  * (e.g. in `.mode = ELIB_KEY_COMBO_SHORT`) stays usable. */
-#define ELIB_KEY_COMBO_SHORT(keys_list, window, cid)                         \
+#define ELIB_KEY_COMBO_SHORT(cid, keys_list, window)                         \
     { .mode = ELIB_KEY_COMBO_SHORT,                                        \
       .combo_keys = (keys_list),                                             \
       .combo_count = ELIB_KEY_ARRAY_SIZE(keys_list),                         \
       .window_ms = (window),                                                 \
       .combo_id = (cid) }
 
-#define ELIB_KEY_COMBO_LONG(keys_list, window, cid)                          \
+#define ELIB_KEY_COMBO_LONG(cid, keys_list, window)                          \
     { .mode = ELIB_KEY_COMBO_LONG,                                         \
       .combo_keys = (keys_list),                                             \
       .combo_count = ELIB_KEY_ARRAY_SIZE(keys_list),                         \
@@ -77,7 +78,7 @@
       .combo_id = (cid) }
 
 /* HOLD_PRESS does not use window_ms, so the macro omits it */
-#define ELIB_KEY_COMBO_HOLD_PRESS(hold_list, press_list, cid)                \
+#define ELIB_KEY_COMBO_HOLD_PRESS(cid, hold_list, press_list)                \
     { .mode = ELIB_KEY_COMBO_HOLD_PRESS,                                   \
       .hold_keys = (hold_list),                                              \
       .hold_count = ELIB_KEY_ARRAY_SIZE(hold_list),                          \

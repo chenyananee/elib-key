@@ -859,8 +859,8 @@ static const elib_key_item_cfg_t macro_keys[] = {
 };
 
 static const elib_key_combo_cfg_t macro_combos[] = {
-    ELIB_KEY_COMBO_SHORT(macro_keys_ab, 500, 0),
-    ELIB_KEY_COMBO_HOLD_PRESS(macro_keys_a, macro_keys_b, 1),
+    ELIB_KEY_COMBO_SHORT(0, macro_keys_ab, 500),
+    ELIB_KEY_COMBO_HOLD_PRESS(1, macro_keys_a, macro_keys_b),
 };
 
 static const elib_key_driver_cfg_t macro_driver =
