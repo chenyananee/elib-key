@@ -264,8 +264,11 @@ static elib_key_driver_cfg_t make_three_key_driver(void) {
 }
 
 static const uint8_t three_ids_ab[] = {0, 1};
+/* Overall gesture window 6000: the legacy claim happens when the LAST
+ * participant crosses its own first threshold (>= 1000 hold), so the
+ * window must comfortably exceed that point and the release phase */
 static const elib_key_combo_cfg_t three_combos[] = {
-    ELIB_KEY_COMBO_LONG_BINARY(10, three_ids_ab, 500),
+    ELIB_KEY_COMBO_LONG_BINARY(10, three_ids_ab, 6000),
 };
 
 static void reset_three(void) {
@@ -287,13 +290,15 @@ static void reset_three(void) {
 /* --- Windowed COMBO_LONG (co-held windows, mirror of per-key long press):
  * AB combo windows {3000, 5000} — claim the instant both are down, each
  * window crossed fires on_combo_hold, releasing inside [3000, 5000) fires
- * the combo, releasing past 5000 classifies invalid */
-static const uint16_t combo_windows[] = {3000, 5000};
-static const elib_key_combo_cfg_t windowed_combos[] = {
+ * the combo, releasing past 5000 classifies invalid. window_ms is the
+ * OVERALL gesture window (all press + all release must sit inside it,
+ * measured from the first press); tuned per test via reset_windowed_ms */
+static uint16_t combo_windows[] = {3000, 5000};
+static elib_key_combo_cfg_t windowed_combos[] = {
     ELIB_KEY_COMBO_LONG_SIMPLE(10, three_ids_ab, 500, combo_windows),
 };
 
-static void reset_windowed(void) {
+static void reset_windowed_ms(uint16_t window_ms) {
     memset(&test_ctx, 0, sizeof(test_ctx));
     memset(mock_levels, 0, sizeof(mock_levels));
     reset_event_log();
@@ -302,9 +307,58 @@ static void reset_windowed(void) {
     drv = make_three_key_driver();
     assert(elib_key_init(&test_ctx, &drv) == ELIB_KEY_OK);
     static elib_key_linkage_cfg_t lnk;
+    windowed_combos[0].window_ms = window_ms;
     lnk = (elib_key_linkage_cfg_t){
         .combos = windowed_combos, .combo_count = 1,
         .on_combo = mock_on_combo, .on_combo_hold = mock_on_combo_hold,
+    };
+    assert(elib_key_linkage_init(&test_ctx, &lnk) == ELIB_KEY_OK);
+    key_cfg = test_ctx.driver_cfg;
+}
+
+/* Default 8000: every legacy windowed-behavior timeline fits inside */
+static void reset_windowed(void) {
+    reset_windowed_ms(8000);
+}
+
+/* --- Overall-window SHORT combo: parked clicks beyond the window block
+ * the combo match; members keep their own classification (A solo click
+ * still fires on its WAIT timeout, B dies as an ignored follower) --- */
+static const uint16_t span_key_thresholds[] = {1000, 3000};
+static const elib_key_item_cfg_t span_key_cfg[] = {
+    { .key_id = 0, .max_click = 2, .multi_click_window_ms = 300,
+      .long_press_thresholds = span_key_thresholds, .threshold_count = 2 },
+    { .key_id = 1, .max_click = 2, .multi_click_window_ms = 300,
+      .long_press_thresholds = span_key_thresholds, .threshold_count = 2 },
+};
+static const uint8_t span_keys_ab[] = {0, 1};
+static const elib_key_combo_cfg_t span_window_combos[] = {
+    { .mode = ELIB_KEY_COMBO_SHORT, .combo_keys = span_keys_ab,
+      .combo_count = 2, .window_ms = 100, .combo_id = 3 },
+};
+
+static elib_key_driver_cfg_t make_span_window_driver(void) {
+    elib_key_driver_cfg_t cfg = {
+        .keys = span_key_cfg, .key_count = 2,
+        .read_level = mock_read_level, .on_event = mock_on_event,
+        .on_press = mock_on_press, .on_release = mock_on_release,
+        .on_long_hold = mock_on_long_hold,
+    };
+    return cfg;
+}
+
+static void reset_span_window(void) {
+    memset(&test_ctx, 0, sizeof(test_ctx));
+    memset(mock_levels, 0, sizeof(mock_levels));
+    reset_event_log();
+    reset_combo_log();
+    static elib_key_driver_cfg_t drv;   /* survives helper return */
+    drv = make_span_window_driver();
+    assert(elib_key_init(&test_ctx, &drv) == ELIB_KEY_OK);
+    static elib_key_linkage_cfg_t lnk;
+    lnk = (elib_key_linkage_cfg_t){
+        .combos = span_window_combos, .combo_count = 1,
+        .on_combo = mock_on_combo,
     };
     assert(elib_key_linkage_init(&test_ctx, &lnk) == ELIB_KEY_OK);
     key_cfg = test_ctx.driver_cfg;
@@ -829,12 +883,13 @@ static void test_long_combo_claim_after_staggered_press(void) {
     assert(last_long_hold_key == 0);
 
     /* B joins later: becomes a follower; the combo claims once B is also
-     * past its first threshold. From then on everything individual stops */
-    mock_levels[1] = 1; elib_key_scan(&test_ctx, 10);
-    elib_key_scan(&test_ctx, 200);  /* B hold 210: claim engages */
+     * past its first threshold — while both press ages still fit inside
+     * the 500 ms overall window (A is 415 ms in, budget left: 85 ms). */
+    mock_levels[1] = 1; elib_key_scan(&test_ctx, 195);
+    elib_key_scan(&test_ctx, 10);   /* A 415, B 205: claim engages */
 
     /* B's own escalation is suppressed for the rest of the gesture */
-    elib_key_scan(&test_ctx, 200);  /* both hold ~430, still < 500 */
+    elib_key_scan(&test_ctx, 10);   /* B hold ~215: still nothing */
     assert(long_hold_count == 1);   /* no further callbacks */
 
     mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
@@ -1527,6 +1582,103 @@ static void test_all_released_resets_everything(void) {
     printf("PASSED\n");
 }
 
+static void test_combo_long_window_expired_invalid(void) {
+    printf("Test: overall window expired -> condemned combo, release silent... ");
+    reset_windowed_ms(3500);    /* overall window < the 5000 release cap */
+
+    /* Both pressed the same scan: press span ~0 -> the claim engages and
+     * the release deadline is the first press + 3500 ms */
+    mock_levels[0] = 1; mock_levels[1] = 1; elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 3200);    /* co-held 3210: window 0 escalates */
+    assert(combo_hold_count == 1);
+
+    elib_key_scan(&test_ctx, 500);     /* the overall window runs out */
+    assert(combo_hold_count == 1);     /* no further escalation */
+
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+    mock_levels[1] = 0; elib_key_scan(&test_ctx, 10);
+    /* Releasing inside the co-held window [3000, 5000) would normally
+     * fire — but the overall window condemned the gesture: nothing */
+    assert(combo_count == 0);
+    assert(event_count == 0);
+    assert(long_hold_count == 0);
+
+    /* The channel is free again */
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+    assert(event_count == 1);
+    assert(last_event_type == ELIB_KEY_EVENT_SHORT_CLICK);
+
+    printf("PASSED\n");
+}
+
+static void test_combo_long_late_join_ignored(void) {
+    printf("Test: B joining after the window cannot hijack A's gesture... ");
+    reset_windowed_ms(500);
+
+    /* A pressed alone: its solo long press proceeds normally */
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 1100);    /* A hold 1110 >= 1000: level 0 */
+    assert(long_hold_count == 1);
+    assert(combo_hold_count == 0);
+
+    /* B joins 1120 ms after A's press: outside the 500 ms overall window,
+     * so the combo cannot claim; B is an ignored follower and A's own
+     * gesture runs to completion */
+    mock_levels[1] = 1; elib_key_scan(&test_ctx, 10);
+    mock_levels[1] = 0; elib_key_scan(&test_ctx, 10);  /* B click discarded */
+    assert(combo_count == 0);
+    assert(event_count == 0);
+    assert(long_hold_count == 1);
+
+    elib_key_scan(&test_ctx, 1000);    /* A hold ~2130, still held */
+    assert(long_hold_count == 1);      /* no combo escalation fired */
+
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+    assert(combo_count == 0);
+    assert(event_count == 1);
+    assert(last_event_key == 0);
+    assert(last_event_type == ELIB_KEY_EVENT_LONG_PRESS);
+    assert(last_event_threshold == 0);
+
+    printf("PASSED\n");
+}
+
+static void test_short_combo_press_span_window(void) {
+    printf("Test: SHORT combo needs all presses inside the window... ");
+    reset_span_window();
+
+    /* A clicks: its press is parked (max_click 2), the channel is owned */
+    mock_levels[0] = 1; elib_key_scan(&test_ctx, 10);
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 10);
+    elib_key_scan(&test_ctx, 190);     /* A parked, idle 190 < 300 */
+
+    /* B clicks 210 ms after A's press: inside A's park window but beyond
+     * the 100 ms combo window. B is an ignored follower; its click dies */
+    mock_levels[1] = 1; elib_key_scan(&test_ctx, 10);
+    mock_levels[1] = 0; elib_key_scan(&test_ctx, 10);
+    assert(combo_count == 0);
+    assert(event_count == 0);
+
+    /* A's WAIT times out: its solo click is emitted normally */
+    mock_levels[0] = 0; elib_key_scan(&test_ctx, 100);  /* idle 300 */
+    assert(event_count == 1);
+    assert(last_event_key == 0);
+    assert(last_event_type == ELIB_KEY_EVENT_SHORT_CLICK);
+    assert(last_event_clicks == 1);
+    assert(combo_count == 0);
+
+    /* Control: same-scan clicks (span far below the 100 ms window) still
+     * match the combo */
+    mock_levels[0] = 1; mock_levels[1] = 1; elib_key_scan(&test_ctx, 10);
+    mock_levels[0] = 0; mock_levels[1] = 0; elib_key_scan(&test_ctx, 10);
+    assert(combo_count == 1);
+    assert(last_combo_id == 3);
+    assert(event_count == 1);          /* the two clicks stay consumed */
+
+    printf("PASSED\n");
+}
+
 static void test_press_release_callbacks(void) {
     printf("Test: press/release callbacks fire once per edge... ");
     reset_test_single();
@@ -1759,6 +1911,9 @@ int main(void) {
     test_combo_long_release_past_cap_invalid();
     test_combo_long_under_first_window_silent();
     test_all_released_resets_everything();
+    test_combo_long_window_expired_invalid();
+    test_combo_long_late_join_ignored();
+    test_short_combo_press_span_window();
     test_press_release_callbacks();
     test_press_release_per_multi_click();
     test_null_callbacks_no_crash();
