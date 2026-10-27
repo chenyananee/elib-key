@@ -15,6 +15,13 @@
  *      fired, the channel is free for the next gesture.
  *
  * Combo claim model:
+ *   Overall gesture window (window_ms, shared by COMBO_SHORT/LONG): counted
+ *   from the FIRST participant's press. All participants must press (and,
+ *   for LONG, all participants must release) inside that window; window_ms
+ *   == 0 disables the constraint. A windowed claim therefore requires the
+ *   press span (fist press -> last press) < window_ms, and a claim arms an
+ *   expiry countdown — an expired gesture keeps its claims (silence, no
+ *   replay) until everyone released, then fires nothing.
  *   COMBO_LONG     claims while all participants are pressed past their
  *                  first threshold; fires once when all released. The
  *                  claim permanently cancels every participant's LONG_PRESS
@@ -176,6 +183,53 @@ static uint8_t combo_all_released(const elib_key_ctx_t *ctx,
         }
     }
     return 1;
+}
+
+/* Age of a key's current press: held time so far while PRESSED; for a
+ * parked click (MULTI_CLICK_WAIT: released, click not yet classified) the
+ * hold duration plus the time already spent waiting */
+static uint32_t press_age_ms(const elib_key_ctx_t *ctx,
+                             const elib_key_driver_cfg_t *drv,
+                             uint8_t key_id) {
+    uint8_t idx = key_idx_of(drv, key_id);
+    if (idx == 0xFF) {
+        return 0;
+    }
+    const elib_key_state_t *ks = &ctx->key_states[idx];
+    uint32_t age = (uint32_t)ks->hold_ms;
+    if (ks->state == ELIB_KEY_STATE_MULTI_CLICK_WAIT) {
+        age += (uint32_t)ks->idle_ms;
+    }
+    return age;
+}
+
+/* Press span (first -> last participant press) inside the gesture window:
+ * measured conservatively as the current age of the earliest-pressed
+ * member (== exact span at the moment the last participant just pressed;
+ * >= span later). window_ms == 0 disables the constraint */
+static uint32_t max_press_age_ms(const elib_key_ctx_t *ctx,
+                                 const elib_key_driver_cfg_t *drv,
+                                 const uint8_t *ids, uint8_t count) {
+    uint32_t first_press_age = 0;
+    for (uint8_t k = 0; k < count; k++) {
+        uint32_t age = press_age_ms(ctx, drv, ids[k]);
+        if (age > first_press_age) {
+            first_press_age = age;
+        }
+    }
+    return first_press_age;
+}
+
+static uint8_t press_span_in_window(const elib_key_ctx_t *ctx,
+                                    const elib_key_driver_cfg_t *drv,
+                                    const uint8_t *ids, uint8_t count,
+                                    uint16_t window_ms) {
+    if (window_ms == 0) {
+        return 1;
+    }
+    /* strictly inside: the release phase keeps at least one scan */
+    return max_press_age_ms(ctx, drv, ids, count) <
+                   (uint32_t)window_ms ? 1 : 0;
 }
 
 static uint8_t all_click_captured(const elib_key_ctx_t *ctx,
@@ -406,11 +460,21 @@ void elib_key_arbitrate(elib_key_ctx_t *ctx, uint32_t elapsed_ms) {
     if (ctx->gesture.bit_flags.locked && lnk != NULL) {
         const elib_key_combo_cfg_t *cc =
             &lnk->combos[ctx->gesture.locked_combo];
-        if (cc->mode == ELIB_KEY_COMBO_LONG && cc->threshold_count > 0) {
-            /* Windowed LONG: accumulate the co-held time while the gesture
-             * runs and report every window crossing; the claim stays
-             * permanent (no replay) until every participant released */
-            if (!combo_all_released(ctx, drv, cc)) {
+        uint8_t all_rel = combo_all_released(ctx, drv, cc);
+
+        if (!all_rel) {
+            /* Overall gesture window countdown (from the first press) */
+            if (ctx->gesture.window_left != 0xFFFFu) {
+                ctx->gesture.window_left =
+                    (elapsed_ms >= ctx->gesture.window_left)
+                        ? 0u
+                        : (uint16_t)(ctx->gesture.window_left - elapsed_ms);
+            }
+            if (cc->mode == ELIB_KEY_COMBO_LONG && cc->threshold_count > 0) {
+                /* Windowed LONG: accumulate the co-held time while the
+                 * gesture runs and report every window crossing while the
+                 * overall window is alive; the claim stays permanent (no
+                 * replay) until every participant released */
                 uint8_t crossed = 0;
                 ctx->gesture.hold_ms =
                     elib_key_add_ms(ctx->gesture.hold_ms, elapsed_ms);
@@ -422,7 +486,8 @@ void elib_key_arbitrate(elib_key_ctx_t *ctx, uint32_t elapsed_ms) {
                     crossed = (uint8_t)(t + 1);
                 }
                 if (crossed > ctx->gesture.notified_idx) {
-                    if (lnk->on_combo_hold != NULL) {
+                    if (lnk->on_combo_hold != NULL &&
+                        ctx->gesture.window_left != 0u) {
                         for (uint8_t n =
                                  (uint8_t)(ctx->gesture.notified_idx + 1);
                              n <= crossed;
@@ -433,25 +498,27 @@ void elib_key_arbitrate(elib_key_ctx_t *ctx, uint32_t elapsed_ms) {
                     }
                     ctx->gesture.notified_idx = crossed;
                 }
-            } else {
-                /* All released: classify by the co-held time. Hold < first
-                 * window or >= the cap fires nothing (the claim already
-                 * silenced the participants — nothing leaks) */
+            }
+        } else {
+            /* All released: settle by the recorded timing */
+            const uint8_t window_alive = (ctx->gesture.window_left != 0u);
+            if (cc->mode == ELIB_KEY_COMBO_LONG &&
+                cc->threshold_count > 0) {
+                /* Windowed LONG: releasing inside a co-held window fires,
+                 * past the cap or after the overall window expired fires
+                 * nothing (claims were held to here — nothing leaks) */
                 const uint16_t cap =
                     cc->long_press_thresholds[cc->threshold_count - 1];
-                if (ctx->gesture.hold_ms >=
+                if (window_alive &&
+                    ctx->gesture.hold_ms >=
                         cc->long_press_thresholds[0] &&
                     ctx->gesture.hold_ms < cap) {
                     lnk->on_combo(cc->combo_id, cc->mode);
                 }
-                for_each_member_claim(ctx, drv, cc, 0);
-                memset(&ctx->gesture, 0, sizeof(ctx->gesture));
-            }
-        } else if (combo_all_released(ctx, drv, cc)) {
-            /* Legacy LONG and HOLD_PRESS: fire once when every participant
-             * released (HOLD_PRESS reports at match time; fired is already
-             * set, so this branch only terminates its claims) */
-            if (!ctx->gesture.bit_flags.fired) {
+            } else if (!ctx->gesture.bit_flags.fired && window_alive) {
+                /* Legacy LONG: fire once when the last participant
+                 * released. HOLD_PRESS reported its trigger at match time
+                 * (fired == 1) and only terminates its claims here */
                 lnk->on_combo(cc->combo_id, cc->mode);
             }
             for_each_member_claim(ctx, drv, cc, 0);
@@ -467,24 +534,40 @@ void elib_key_arbitrate(elib_key_ctx_t *ctx, uint32_t elapsed_ms) {
                 if (cc->threshold_count > 0) {
                     /* Windowed LONG claims the moment every participant is
                      * pressed; that instant is the co-held timing origin */
-                    if (all_pressed(ctx, drv, cc->combo_keys,
-                                    cc->combo_count)) {
-                        ctx->gesture.locked_combo = c;
-                        ctx->gesture.bit_flags.fired = 0;
-                        ctx->gesture.hold_ms = 0;
-                        ctx->gesture.notified_idx = 0;
-                        ctx->gesture.bit_flags.locked = 1;
-                        for_each_member_claim(ctx, drv, cc, 1);
-                        break;
+                    if (!all_pressed(ctx, drv, cc->combo_keys,
+                                     cc->combo_count)) {
+                        continue;
                     }
-                } else if (all_hold_past_first(ctx, drv, cc->combo_keys,
-                                               cc->combo_count)) {
-                    ctx->gesture.locked_combo = c;
-                    ctx->gesture.bit_flags.fired = 0;
-                    ctx->gesture.bit_flags.locked = 1;
-                    for_each_member_claim(ctx, drv, cc, 1);
-                    break;
+                } else if (!all_hold_past_first(ctx, drv, cc->combo_keys,
+                                                cc->combo_count)) {
+                    continue;
                 }
+                /* Overall window: all participants must press inside the
+                 * gesture window measured from the first press */
+                if (!press_span_in_window(ctx, drv, cc->combo_keys,
+                                          cc->combo_count, cc->window_ms)) {
+                    continue; /* presses stretched too far: not this combo;
+                               * earlier keys keep their solo gesture */
+                }
+                ctx->gesture.locked_combo = c;
+                ctx->gesture.bit_flags.fired = 0;
+                ctx->gesture.hold_ms = 0;
+                ctx->gesture.notified_idx = 0;
+                {
+                    /* Remaining release deadline, measured from the claim
+                     * instant so the total (first press -> last release)
+                     * stays inside the window */
+                    uint32_t spent =
+                        max_press_age_ms(ctx, drv, cc->combo_keys,
+                                         cc->combo_count);
+                    ctx->gesture.window_left =
+                        (cc->window_ms == 0)
+                            ? 0xFFFFu
+                            : (uint16_t)(cc->window_ms - spent);
+                }
+                ctx->gesture.bit_flags.locked = 1;
+                for_each_member_claim(ctx, drv, cc, 1);
+                break;
             } else if (cc->mode == ELIB_KEY_COMBO_HOLD_PRESS) {
                 if (all_hold_past_first(ctx, drv, cc->hold_keys,
                                         cc->hold_count) &&
@@ -499,11 +582,28 @@ void elib_key_arbitrate(elib_key_ctx_t *ctx, uint32_t elapsed_ms) {
                     ctx->gesture.locked_combo = c;
                     ctx->gesture.bit_flags.fired = 1;
                     ctx->gesture.bit_flags.locked = 1;
+                    /* HOLD_PRESS does not participate in the overall
+                     * gesture window: its hold keys were pressed long
+                     * before the press keys (that is the gesture itself),
+                     * so a press-span check would never pass. Unbounded */
+                    ctx->gesture.window_left = 0xFFFFu;
                     break;
                 }
             } else { /* ELIB_KEY_COMBO_SHORT: pure overlap, fires instantly */
                 if (all_click_captured(ctx, drv, cc->combo_keys,
                                        cc->combo_count)) {
+                    /* Overall window: the whole press span (first -> last
+                     * captured press) must sit inside it. Out of window:
+                     * skip this combo but keep trying others — the members
+                     * keep their own classification (the first arriver's
+                     * gesture proceeds on its own; latecomers drop as
+                     * ignored followers). NOT a break: a later combo may
+                     * still match */
+                    if (!press_span_in_window(ctx, drv, cc->combo_keys,
+                                              cc->combo_count,
+                                              cc->window_ms)) {
+                        continue;
+                    }
                     lnk->on_combo(cc->combo_id, cc->mode);
                     for (uint8_t k = 0; k < cc->combo_count; k++) {
                         abort_click_sequence(ctx, cc->combo_keys[k]);

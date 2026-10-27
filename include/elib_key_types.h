@@ -133,7 +133,11 @@ typedef struct {
      * released, no windows */
     const uint16_t *long_press_thresholds;
     uint8_t         threshold_count;
-    uint16_t       window_ms;      /* deprecated: not used by matching */
+    uint16_t       window_ms;      /* overall gesture window, counted from
+                                        the first participant's press:
+                                        combo presses (and, for LONG,
+                                        releases) must fit inside;
+                                        0 = disabled */
     uint8_t        combo_id;
 } elib_key_combo_cfg_t;
 
@@ -154,6 +158,11 @@ typedef struct {
                                     all participants were pressed */
     uint8_t  notified_idx;     /* combo-hold escalation levels already
                                     reported for this gesture */
+    uint16_t window_left;      /* overall gesture window remaining, counted
+                                    from the first participant's press;
+                                    0xFFFF = unbounded (window_ms == 0),
+                                    0 = expired (combo condemned: claims
+                                    stay silent, nothing fires at release) */
     struct {
         uint8_t locked : 1;    /* a combo owns the gesture channel */
         uint8_t fired  : 1;    /* combo already reported; HOLD_PRESS fires at

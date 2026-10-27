@@ -62,7 +62,10 @@
 /* Combo helpers. The combo id is always the FIRST parameter, matching the
  * per-key macros. Macro names equal the mode enum values; the function-like
  * macro only expands when called with parentheses, so the bare enum value
- * (e.g. in `.mode = ELIB_KEY_COMBO_SHORT`) stays usable. */
+ * (e.g. in `.mode = ELIB_KEY_COMBO_SHORT`) stays usable.
+ * "window" = the OVERALL gesture window in ms, measured from the first
+ * participant's press: all presses (and, for LONG, all releases) must fit
+ * inside it; 0 disables the constraint. */
 #define ELIB_KEY_COMBO_SHORT(cid, keys_list, window)                         \
     { .mode = ELIB_KEY_COMBO_SHORT,                                        \
       .combo_keys = (keys_list),                                             \
@@ -72,11 +75,12 @@
 
 /* COMBO_LONG with configurable co-held windows (mirror of per-key long
  * press thresholds): the gesture claims the instant all participants are
- * pressed; each window crossed while they stay held fires the optional
+ * pressed and the press span fits the overall window; each window crossed
+ * while they stay held (and the overall window is alive) fires the optional
  * on_combo_hold callback, and releasing while the co-held time falls in a
  * window fires the combo. The LAST window is the cap: releasing past it
  * classifies invalid (nothing fires).
- * ELIB_KEY_COMBO_LONG(cid, keys_list, window, ...window_ms) */
+ * ELIB_KEY_COMBO_LONG(cid, keys_list, window, ...coheld_windows_ms) */
 #define ELIB_KEY_COMBO_LONG(cid, keys_list, window, ...)                     \
     { .mode = ELIB_KEY_COMBO_LONG,                                         \
       .combo_keys = (keys_list),                                             \
@@ -106,7 +110,8 @@
       .window_ms = (window),                                                 \
       .combo_id = (cid) }
 
-/* HOLD_PRESS does not use window_ms, so the macro omits it */
+/* HOLD_PRESS does not use the overall window (hold keys precede the press
+ * keys by definition), so the macro omits it */
 #define ELIB_KEY_COMBO_HOLD_PRESS(cid, hold_list, press_list)                \
     { .mode = ELIB_KEY_COMBO_HOLD_PRESS,                                   \
       .hold_keys = (hold_list),                                              \
